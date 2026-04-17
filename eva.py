@@ -135,7 +135,7 @@ memory_hints_schema = {
         }
     }
 
-search_file(directory="d:/projects", file_types=["*.py"])search_file(directory="d:/projects", file_types=["*.py"])search_file_schema = {
+search_file_schema = {
         "type": "function",
         "function": {
             "name": "search_file",
