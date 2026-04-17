@@ -144,7 +144,7 @@ search_file_schema = {
             ),
             "parameters": {
                 "type": "object",
-                "properties": {search_file(directory="d:/projects", file_types=["*.py"])search_file(directory="d:/projects", file_types=["*.py"])search_file_schema = {
+                "properties": {
                     "directory": {"type": "string", "description": "要搜索的目录路径"},
                     "file_name": {"type": "string", "description": "文件名关键词（支持通配符），可选"},
                     "content": {"type": "string", "description": "内容关键词，可选"},
@@ -245,7 +245,13 @@ def search_file(directory, file_name=None, content=None, max_depth=None, file_ty
     
     def get_relative_depth(base_path, target_path):
         try:
-            relative = target_path.relative_to(base_path)
+            base = base_path.resolve()
+            target = target_path.resolve()
+            
+            if base == target:
+                return 0
+            
+            relative = target.relative_to(base)
             return len(relative.parts)
         except ValueError:
             return -1
