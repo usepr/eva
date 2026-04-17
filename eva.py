@@ -21,16 +21,15 @@ EVA_API_KEY = os.environ.get("EVA_API_KEY", "sk-这里填你的deepseek API key"
 def detect_model_len():
     url = f"{EVA_BASE_URL}/models"
     headers = {"Authorization": f"Bearer {EVA_API_KEY}"}
-
-    resp = requests.get(url, headers=headers)
-    out = resp.json()
-    for d in out['data']:
-        if d['id'] == EVA_MODEL_NAME:
-            if 'max_model_len' in d:
-                return d['max_model_len']
-            else:
-                return 256_000
-    raise Exception(f"{EVA_MODEL_NAME} not found")
+    try:
+        resp = requests.get(url, headers=headers)
+        out = resp.json()
+        for d in out.get('data', []):
+            if d['id'] == EVA_MODEL_NAME:
+                return d.get('max_model_len', 256_000)
+    except Exception:
+        pass
+    return 256_000
 
 
 # ========================= EVA配置区 =========================
