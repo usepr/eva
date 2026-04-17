@@ -135,6 +135,27 @@ memory_hints_schema = {
         }
     }
 
+search_file(directory="d:/projects", file_types=["*.py"])search_file(directory="d:/projects", file_types=["*.py"])search_file_schema = {
+        "type": "function",
+        "function": {
+            "name": "search_file",
+            "description": (
+                "在指定目录下搜索文件，支持按文件名、内容关键词搜索，支持搜索深度和文件类型过滤"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "directory": {"type": "string", "description": "要搜索的目录路径"},
+                    "file_name": {"type": "string", "description": "文件名关键词（支持通配符），可选"},
+                    "content": {"type": "string", "description": "内容关键词，可选"},
+                    "max_depth": {"type": "integer", "description": "最大搜索深度，0表示仅当前目录，None表示无限制，默认None"},
+                    "file_types": {"type": "array", "items": {"type": "string"}, "description": "文件类型过滤，如['*.py', '*.txt']，可选"}
+                },
+                "required": ["directory"]
+            }
+        }
+    }
+
 if IS_WINDOWS:
     os.environ["POWERSHELL_OUTPUT_ENCODING"] = "utf-8"
 elif sys.stdin.isatty():
@@ -210,9 +231,103 @@ def leave_memory_hints(hints):
         f.write(hints)
     return "已留下记忆线索，并清空了对话记录。只保留了最后一次对话"
 
+def search_file(directory, file_name=None, content=None, max_depth=None, file_types=None):
+    from fnmatch import fnmatch
+    
+    results = []
+    directory = Path(directory)
+    
+    if not directory.exists():
+        return f"目录不存在：{directory}"
+    
+    if not directory.is_dir():
+        return f"路径不是目录：{directory}"
+    
+    def get_relative_depth(base_path, target_path):
+        try:
+            relative = target_path.relative_to(base_path)
+            return len(relative.parts)
+        except ValueError:
+            return -1
+    
+    for root, dirs, files in os.walk(directory):
+        root_path = Path(root)
+        current_depth = get_relative_depth(directory, root_path)
+        
+        if max_depth is not None and current_depth > max_depth:
+            dirs.clear()
+            continue
+        
+        for file_name_path in files:
+            file_path = root_path / file_name_path
+            
+            if file_types:
+                match_type = False
+                for file_type in file_types:
+                    if fnmatch(file_name_path, file_type):
+                        match_type = True
+                        break
+                if not match_type:
+                    continue
+            
+            if file_name:
+                if not fnmatch(file_name_path, file_name) and file_name not in file_name_path:
+                    continue
+            
+            match_content = None
+            if content:
+                try:
+                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        file_content = f.read()
+                        if content in file_content:
+                            lines = file_content.split('\n')
+                            matching_lines = []
+                            for i, line in enumerate(lines):
+                                if content in line:
+                                    start = max(0, i - 2)
+                                    end = min(len(lines), i + 3)
+                                    context = lines[start:end]
+                                    matching_lines.append({
+                                        'line_number': i + 1,
+                                        'context': '\n'.join([f"{start + j + 1}: {line}" for j, line in enumerate(context)])
+                                    })
+                            if matching_lines:
+                                match_content = matching_lines
+                        else:
+                            continue
+                except (IOError, OSError):
+                    continue
+            
+            result = {
+                'file_path': str(file_path),
+                'file_name': file_name_path
+            }
+            if match_content:
+                result['matching_content'] = match_content
+            
+            results.append(result)
+    
+    if not results:
+        return "未找到匹配的文件"
+    
+    output = []
+    output.append(f"找到 {len(results)} 个匹配文件：")
+    output.append("-" * 60)
+    
+    for i, result in enumerate(results, 1):
+        output.append(f"[{i}] {result['file_path']}")
+        if 'matching_content' in result:
+            for match in result['matching_content']:
+                output.append(f"    匹配行 {match['line_number']}:")
+                output.append(f"    {match['context']}")
+                output.append("    ---")
+    
+    return '\n'.join(output)
+
 tool_executors = {
     "run_cli": run_cli,
-    "leave_memory_hints": leave_memory_hints
+    "leave_memory_hints": leave_memory_hints,
+    "search_file": search_file
 }
 
 def clean_input(text):
@@ -473,9 +588,9 @@ def agent_single_loop():
             sys.stdout.write("\n[*] EVA: ")
             sys.stdout.flush()
             if COMPACT_PANIC == "on":
-                msg, usage = llm_chat_stream(messages, tools=[run_cli_schema, memory_hints_schema])
+                msg, usage = llm_chat_stream(messages, tools=[run_cli_schema, memory_hints_schema, search_file_schema])
             else:
-                msg, usage = llm_chat_stream(messages, tools=[run_cli_schema])
+                msg, usage = llm_chat_stream(messages, tools=[run_cli_schema, search_file_schema])
             messages.append(msg)
 
             # 流式输出已经实时打印了内容，这里只需换行
