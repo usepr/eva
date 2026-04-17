@@ -34,5 +34,13 @@
   {
     "role": "assistant",
     "content": null
+  },
+  {
+    "role": "user",
+    "content": "search_file(directory=\"D:\\Desktop\\一面千石\\eva\", file_types=[\"*.py\"], max_depth=0)"
+  },
+  {
+    "role": "user",
+    "content": "你好"
   }
 ]

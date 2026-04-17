@@ -18,6 +18,46 @@ EVA_BASE_URL = os.environ.get("EVA_BASE_URL", "https://api.deepseek.com/v1")
 EVA_MODEL_NAME = os.environ.get("EVA_MODEL_NAME", "deepseek-reasoner")
 EVA_API_KEY = os.environ.get("EVA_API_KEY", "sk-这里填你的deepseek API key")
 
+def validate_api_key(api_key):
+    try:
+        api_key.encode('latin-1')
+        return True, None
+    except UnicodeEncodeError:
+        return False, "API key包含非ASCII字符，无法发送HTTP请求"
+    except Exception as e:
+        return False, f"API key验证失败: {e}"
+
+def check_api_key_config():
+    is_valid, error_msg = validate_api_key(EVA_API_KEY)
+    
+    if not is_valid:
+        print("\n" + "=" * 70)
+        print("警告: API key配置有问题！")
+        print("=" * 70)
+        print(f"错误: {error_msg}")
+        print("")
+        print("当前API key包含非ASCII字符（可能是中文字符），")
+        print("这会导致HTTP请求失败，因为HTTP请求头只能包含Latin-1字符。")
+        print("")
+        print("解决方案:")
+        print("  1. 获取有效的API key（从DeepSeek或其他LLM服务商）")
+        print("  2. 设置环境变量 EVA_API_KEY")
+        print("")
+        print("Windows PowerShell设置方法:")
+        print('  $env:EVA_API_KEY="sk-你的有效API key"')
+        print("")
+        print("Windows CMD设置方法:")
+        print('  set EVA_API_KEY=sk-你的有效API key')
+        print("")
+        print("Linux/Mac设置方法:")
+        print('  export EVA_API_KEY="sk-你的有效API key"')
+        print("")
+        print("或者修改 eva.py 第19行的默认值")
+        print("=" * 70 + "\n")
+        return False
+    
+    return True
+
 def detect_model_len():
     default_len = 256_000
     
@@ -737,6 +777,10 @@ python3 {this_file} "$@"
 
 def main():
     global ALLOW_ALL_CLI, messages
+    
+    # 检查API key配置
+    check_api_key_config()
+    
     if not IS_WINDOWS:
         setup_eva_script()
 
