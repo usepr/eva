@@ -19,18 +19,25 @@ EVA_MODEL_NAME = os.environ.get("EVA_MODEL_NAME", "deepseek-reasoner")
 EVA_API_KEY = os.environ.get("EVA_API_KEY", "sk-这里填你的deepseek API key")
 
 def detect_model_len():
-    url = f"{EVA_BASE_URL}/models"
-    headers = {"Authorization": f"Bearer {EVA_API_KEY}"}
+    default_len = 256_000
+    
+    try:
+        url = f"{EVA_BASE_URL}/models"
+        headers = {"Authorization": f"Bearer {EVA_API_KEY}"}
 
-    resp = requests.get(url, headers=headers)
-    out = resp.json()
-    for d in out['data']:
-        if d['id'] == EVA_MODEL_NAME:
-            if 'max_model_len' in d:
-                return d['max_model_len']
-            else:
-                return 256_000
-    raise Exception(f"{EVA_MODEL_NAME} not found")
+        resp = requests.get(url, headers=headers)
+        out = resp.json()
+        for d in out['data']:
+            if d['id'] == EVA_MODEL_NAME:
+                if 'max_model_len' in d:
+                    return d['max_model_len']
+                else:
+                    return default_len
+        print(f"> 警告: 未找到模型 {EVA_MODEL_NAME}，使用默认上下文长度 {default_len}")
+        return default_len
+    except Exception as e:
+        print(f"> 警告: 检测模型长度失败 ({e})，使用默认上下文长度 {default_len}")
+        return default_len
 
 
 # ========================= EVA配置区 =========================
