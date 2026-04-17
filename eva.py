@@ -144,7 +144,7 @@ search_file_schema = {
             ),
             "parameters": {
                 "type": "object",
-                "properties": {
+                "properties": {search_file(directory="d:/projects", file_types=["*.py"])search_file(directory="d:/projects", file_types=["*.py"])search_file_schema = {
                     "directory": {"type": "string", "description": "要搜索的目录路径"},
                     "file_name": {"type": "string", "description": "文件名关键词（支持通配符），可选"},
                     "content": {"type": "string", "description": "内容关键词，可选"},
