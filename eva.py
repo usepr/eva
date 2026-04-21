@@ -38,7 +38,7 @@ EVA_MODEL_NAME = os.environ.get("EVA_MODEL_NAME", "deepseek-reasoner")
 EVA_API_KEY = os.environ.get("EVA_API_KEY", "sk-这里填你的deepseek API key")
 
 
-def detect_model_len():
+def detect_model_len() -> int:
     url = f"{EVA_BASE_URL}/models"
     headers = {"Authorization": f"Bearer {EVA_API_KEY}"}
     try:
@@ -90,7 +90,7 @@ ENCODING = "utf-8"
 
 
 # ====================== 环境探针 ======================
-def collect_env_info():
+def collect_env_info() -> str:
     cmds = {
         "Linux": [
             "uname -a",
@@ -236,7 +236,7 @@ elif sys.stdin.isatty():
     readline.set_startup_hook()
 
 
-def read_input(prompt=""):
+def read_input(prompt: str = "") -> str:
     try:
         return input(prompt)
     except EOFError:
@@ -343,7 +343,7 @@ def leave_memory_hints(hints: str, ctx: AgentContext = _ctx) -> str:
 tool_executors = {"run_cli": run_cli, "leave_memory_hints": leave_memory_hints}
 
 
-def clean_input(text):
+def clean_input(text: str) -> str:
     if not isinstance(text, str):
         return str(text)
 
@@ -354,8 +354,12 @@ def clean_input(text):
 
 
 def _build_request_data(
-    messages, tools=None, temperature=0.6, thinking=True, stream=False
-):
+    messages: list[dict],
+    tools: list[dict] | None = None,
+    temperature: float = 0.6,
+    thinking: bool = True,
+    stream: bool = False,
+) -> dict:
     """构建 LLM 请求参数"""
     data = {
         "model": EVA_MODEL_NAME,
@@ -376,8 +380,12 @@ def _build_request_data(
     return data
 
 
-def llm_chat(messages, tools=None, temperature=0.6, thinking=True):
-    """非流式调用（用于安全审查等短请求）"""
+def llm_chat(
+    messages: list[dict],
+    tools: list[dict] | None = None,
+    temperature: float = 0.6,
+    thinking: bool = True,
+) -> tuple[dict, dict]:
     url = f"{EVA_BASE_URL}/chat/completions"
     headers = {"Authorization": f"Bearer {EVA_API_KEY}"}
     data = _build_request_data(messages, tools, temperature, thinking, stream=False)
@@ -394,8 +402,12 @@ def llm_chat(messages, tools=None, temperature=0.6, thinking=True):
         raise Exception(f"LLM调用失败，错误信息：{e}, {out}")
 
 
-def llm_chat_stream(messages, tools=None, temperature=0.6, thinking=True):
-    """流式调用，逐 token 打印，返回与非流式相同格式的 (message, usage)"""
+def llm_chat_stream(
+    messages: list[dict],
+    tools: list[dict] | None = None,
+    temperature: float = 0.6,
+    thinking: bool = True,
+) -> tuple[dict, dict]:
     url = f"{EVA_BASE_URL}/chat/completions"
     headers = {"Authorization": f"Bearer {EVA_API_KEY}"}
     data = _build_request_data(messages, tools, temperature, thinking, stream=True)
@@ -532,7 +544,7 @@ _ctx.messages = [
 
 
 # ====================== Session 管理 ======================
-def get_session_file():
+def get_session_file() -> str:
     current_dir = os.getcwd()
     dir_hash = re.sub(r"[\\/:]", "_", current_dir)
     session_dir = f"{WORKSPACE_DIR}/sessions"
@@ -540,14 +552,14 @@ def get_session_file():
     return f"{session_dir}/{dir_hash}.json"
 
 
-def save_session(messages):
+def save_session(messages: list[dict]) -> None:
     session_file = get_session_file()
     with open(session_file, "w", encoding="utf-8") as f:
         json.dump(messages, f, ensure_ascii=False, indent=2)
     print(f"\n> 会话已保存到：{session_file}")
 
 
-def load_session():
+def load_session() -> list[dict] | None:
     session_file = get_session_file()
     if not os.path.exists(session_file):
         return None
@@ -568,7 +580,7 @@ def load_session():
         return None
 
 
-def list_sessions():
+def list_sessions() -> None:
     session_file = get_session_file()
     session_dir = f"{WORKSPACE_DIR}/sessions"
     print(f"目录: {session_dir}\n")
@@ -724,7 +736,7 @@ def human_loop(user_ask: str | None = None, ctx: AgentContext = _ctx) -> None:
             break
 
 
-def setup_eva_script():
+def setup_eva_script() -> bool:
     home = Path.home()
     eva_dir = home / ".local" / "bin" / "eva"
     shell_rc = home / ".bashrc"
@@ -761,7 +773,7 @@ python3 {this_file} "$@"
         return False
 
 
-def main():
+def main() -> None:
     if not IS_WINDOWS:
         setup_eva_script()
 
