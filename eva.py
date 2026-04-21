@@ -179,7 +179,7 @@ SYSTEM_PROMPT = f"""
 {{hints}}
 """
 
-COMPACT_PROMPT = f"""《紧急危机》！！！记忆容量即将达到上限，你需要紧急完成下面三件事情：
+COMPACT_PROMPT = """《紧急危机》！！！记忆容量即将达到上限，你需要紧急完成下面三件事情：
 1、保存记忆：将对话内容整理到文件里保存下来，对应动作是整理记忆并通过run_cli写入记忆文件；
 2、保存技能和知识：将能帮助你进化的知识和技能保持下来，对应动作是思考对未来有用的内容，提炼并通过run_cli写入知识文件。每条知识/技能必须包含【触发条件】（什么场景下适用）和【内容】（具体怎么做），缺少触发条件的知识对未来的你没有意义；
 3、留下关键线索以便你未来在有需要的时候可以找回并翻看这些记忆文件和知识文件，对应动作是调用leave_memory_hints工具留下记忆和进化的线索。
@@ -563,7 +563,8 @@ def load_session():
         size_KB = (os.path.getsize(session_file) + 1000 - 1) // 1000
         print(f"\n> 会话已从文件加载：{session_file} ({format(size_KB, ',')} KB)")
         return messages
-    except:
+    except json.JSONDecodeError:
+        print(f"> 会话文件损坏：{session_file}")
         return None
 
 
@@ -594,8 +595,6 @@ def list_sessions():
 
 
 def clear_session():
-    session_dir = f"{WORKSPACE_DIR}/sessions"
-
     session_file = get_session_file()
     if os.path.exists(session_file):
         try:
@@ -652,12 +651,12 @@ def agent_single_loop(ctx: AgentContext = _ctx) -> None:
                     result = tool_executors[name](**args)
                 except KeyboardInterrupt:
                     print("\n\n工具调用已中断，退出 agent_single_loop，回到用户 turn")
-                    result = f"用户中止该工具运行"
+                    result = "用户中止该工具运行"
                     break_loop = True
                 except Exception as e:
                     result = f"工具执行异常：{str(e)}"
 
-                print(f"<=== 工具返回：")
+                print("<=== 工具返回：")
                 if len(result) > 6000:
                     lines = f"{result[:6000]}\n... 后面内容省略".splitlines()
                 else:
