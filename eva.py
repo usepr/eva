@@ -1,3 +1,7 @@
+"""
+EVA：一个能够自我进化的机器人
+"""
+
 import os
 import re
 import json
@@ -7,6 +11,7 @@ import requests
 import traceback
 import argparse
 import platform
+
 from pathlib import Path
 
 this_file = str(Path(__file__).resolve())
@@ -18,13 +23,16 @@ EVA_BASE_URL = os.environ.get("EVA_BASE_URL", "https://api.deepseek.com/v1")
 EVA_MODEL_NAME = os.environ.get("EVA_MODEL_NAME", "deepseek-reasoner")
 EVA_API_KEY = os.environ.get("EVA_API_KEY", "sk-这里填你的deepseek API key")
 
+
 def detect_model_len():
     url = f"{EVA_BASE_URL}/models"
     headers = {"Authorization": f"Bearer {EVA_API_KEY}"}
     try:
         resp = requests.get(url, headers=headers, timeout=10)
     except UnicodeEncodeError:
-        print(f"错误：EVA_API_KEY ({EVA_API_KEY}) 包含非法字符，请检查 EVA_API_KEY 配置。")
+        print(
+            f"错误：EVA_API_KEY ({EVA_API_KEY}) 包含非法字符，请检查 EVA_API_KEY 配置。"
+        )
         sys.exit(1)
     except Exception as e:
         print(f"错误：无法连接到 {EVA_BASE_URL}，请检查 EVA_BASE_URL 配置。\n详情：{e}")
@@ -36,20 +44,22 @@ def detect_model_len():
         print(f"错误：获取模型列表失败（HTTP {resp.status_code}）：{resp.text[:200]}")
         sys.exit(1)
     out = resp.json()
-    for d in out['data']:
-        if d['id'] == EVA_MODEL_NAME:
-            if 'max_model_len' in d:
-                return d['max_model_len']
+    for d in out["data"]:
+        if d["id"] == EVA_MODEL_NAME:
+            if "max_model_len" in d:
+                return d["max_model_len"]
             else:
                 return 256_000
-    print(f"错误：在 {EVA_BASE_URL} 上未找到模型 '{EVA_MODEL_NAME}'，请检查 EVA_MODEL_NAME 配置。")
+    print(
+        f"错误：在 {EVA_BASE_URL} 上未找到模型 '{EVA_MODEL_NAME}'，请检查 EVA_MODEL_NAME 配置。"
+    )
     print(f"可用模型：{[d['id'] for d in out.get('data', [])]}")
     sys.exit(1)
 
 
 # ========================= EVA配置区 =========================
 TOKEN_CAP = detect_model_len()
-COMPACT_THRESH = 3/4
+COMPACT_THRESH = 3 / 4
 TOOL_RESULT_LEN = int(TOKEN_CAP / 20)
 WORKSPACE_DIR = f"{this_dir}/.eva"
 HINT_FILE = f"{WORKSPACE_DIR}/hints.md"
@@ -65,27 +75,35 @@ ENCODING = "utf-8"
 
 # ====================== 环境探针 ======================
 
+
 def collect_env_info():
     cmds = {
         "Linux": [
             "uname -a",
-            "for t in python3 python node npm git docker curl wget; do command -v $t >/dev/null 2>&1 && echo \"$t: $(${t} --version 2>&1 | head -1)\" || echo \"$t: 未安装\"; done",
-            "ls -1A | grep -v '^\\.$' | grep -v '^\\..$' | while IFS= read -r f; do if [ -d \"$f\" ]; then echo \"[目录] $f\"; else echo \"[文件] $f\"; fi; done",
+            'for t in python3 python node npm git docker curl wget; do command -v $t >/dev/null 2>&1 && echo "$t: $(${t} --version 2>&1 | head -1)" || echo "$t: 未安装"; done',
+            'ls -1A | grep -v \'^\\.$\' | grep -v \'^\\..$\' | while IFS= read -r f; do if [ -d "$f" ]; then echo "[目录] $f"; else echo "[文件] $f"; fi; done',
         ],
         "Windows": [
             "[System.Environment]::OSVersion.VersionString",
             "foreach ($t in @('python','node','git','docker','curl.exe')) { $cmd = Get-Command $t -ErrorAction SilentlyContinue; if ($cmd) { $v = & $t --version 2>&1 | Select-Object -First 1; $name = $t -replace '\\.exe$',''; Write-Output \"$name`: $v\" } else { $name = $t -replace '\\.exe$',''; Write-Output \"$name`: 未安装\" } }",
             "Get-ChildItem -Force | Where-Object { $_.Name -ne '.' -and $_.Name -ne '..' } | ForEach-Object { if ($_.PSIsContainer) { Write-Output \"[目录] $($_.Name)\" } else { Write-Output \"[文件] $($_.Name)\" } }",
-        ]
+        ],
     }
-    labels = ["=== 系统 ===", "=== 已安装工具 ===", f"=== 当前目录 {os.getcwd()} 的目录或文件 ==="]
+    labels = [
+        "=== 系统 ===",
+        "=== 已安装工具 ===",
+        f"=== 当前目录 {os.getcwd()} 的目录或文件 ===",
+    ]
     results = []
     shell_cmds = cmds["Windows"] if IS_WINDOWS else cmds["Linux"]
     for i, (label, cmd) in enumerate(zip(labels, shell_cmds)):
         try:
             r = subprocess.run(
                 [SHELL, SHELL_FLAG, cmd],
-                capture_output=True, text=True, errors='replace', timeout=5
+                capture_output=True,
+                text=True,
+                errors="replace",
+                timeout=5,
             )
             output = r.stdout.strip()
             if not output:
@@ -109,10 +127,11 @@ def collect_env_info():
             pass
     return "\n\n".join(results) if results else "环境信息获取失败"
 
+
 ENV_INFO = collect_env_info()
 
 # ====================== Prompt ======================
-SYSTEM_PROMPT = f'''
+SYSTEM_PROMPT = f"""
 # 你是谁
 你是EVA，一个能够自我进化的机器人。
 
@@ -144,7 +163,7 @@ SYSTEM_PROMPT = f'''
 
 # 记忆线索
 {{hints}}
-'''
+"""
 
 COMPACT_PROMPT = f"""《紧急危机》！！！记忆容量即将达到上限，你需要紧急完成下面三件事情：
 1、保存记忆：将对话内容整理到文件里保存下来，对应动作是整理记忆并通过run_cli写入记忆文件；
@@ -165,45 +184,45 @@ CLI_REVIEW_PROMPT = f"""作为一个安全专家，对{OS_NAME}系统中的{SHEL
 
 # ====================== 工具定义 ======================
 run_cli_schema = {
-        "type": "function",
-        "function": {
-            "name": "run_cli",
-            "description": (
-                f"执行任意 {SHELL} 命令。你可以读取、写入、执行任意内容，其中command是你要执行的命令，timeout是命令的超时时间。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "command": {"type": "string"},
-                    "timeout": {"type": "integer", "default": 30}
-                },
-                "required": ["command"]
-            }
-        }
-    }
+    "type": "function",
+    "function": {
+        "name": "run_cli",
+        "description": (
+            f"执行任意 {SHELL} 命令。你可以读取、写入、执行任意内容，其中command是你要执行的命令，timeout是命令的超时时间。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+                "timeout": {"type": "integer", "default": 30},
+            },
+            "required": ["command"],
+        },
+    },
+}
 
 memory_hints_schema = {
-        "type": "function",
-        "function": {
-            "name": "leave_memory_hints",
-            "description": (
-                "留下记忆文件的相关线索"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "hints": {"type": "string"},
-                },
-                "required": ["hints"]
-            }
-        }
-    }
+    "type": "function",
+    "function": {
+        "name": "leave_memory_hints",
+        "description": ("留下记忆文件的相关线索"),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "hints": {"type": "string"},
+            },
+            "required": ["hints"],
+        },
+    },
+}
 
 if IS_WINDOWS:
     os.environ["POWERSHELL_OUTPUT_ENCODING"] = "utf-8"
 elif sys.stdin.isatty():
     import readline
+
     readline.set_startup_hook()
+
 
 def read_input(prompt=""):
     try:
@@ -211,24 +230,35 @@ def read_input(prompt=""):
     except EOFError:
         return ""
 
-def run_cli(command: str, timeout: int = 30):
+
+def run_cli(command: str, timeout: int = 30) -> str:
+    """执行 Shell 命令"""
     global ALLOW_ALL_CLI
     try:
         if not ALLOW_ALL_CLI:
-            msg, _ = llm_chat([{"role": "user", "content": CLI_REVIEW_PROMPT.format(command=command)}], temperature=0.0, thinking=False)
-            if '放行' not in msg['content']:
+            msg, _ = llm_chat(
+                [
+                    {
+                        "role": "user",
+                        "content": CLI_REVIEW_PROMPT.format(command=command),
+                    }
+                ],
+                temperature=0.0,
+                thinking=False,
+            )
+            if "放行" not in msg["content"]:
                 ans = read_input("Yes (默认) | No | 直接 Ctrl+C 打断：")
-                if 'n' in ans.lower():
+                if "n" in ans.lower():
                     return "用户拒绝运行此命令"
 
         result = subprocess.run(
             [SHELL, SHELL_FLAG, command],
             capture_output=True,
             text=True,
-            errors='replace',
+            errors="replace",
             cwd=os.getcwd(),
             timeout=timeout,
-            shell=False
+            shell=False,
         )
         output = f"Exit code: {result.returncode}\n{result.stdout}"
         if result.stderr:
@@ -237,36 +267,51 @@ def run_cli(command: str, timeout: int = 30):
     except Exception as e:
         return f"执行失败：{str(e)}"
 
-def leave_memory_hints(hints):
+
+def leave_memory_hints(hints: str) -> str:
+    """
+    保存记忆线索到文件，并裁剪对话历史。
+
+    在记忆容量即将耗尽时调用（COMPACT_PANIC 模式），
+    将关键记忆写入 hints.md，并重置对话历史。
+    """
     global messages
     global COMPACT_PANIC
 
     compact_i = -1
-    for i in range(len(messages)-1, -1, -1):
-        if messages[i]['role'] == 'user' and messages[i]['content'] == COMPACT_PROMPT:
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i]["role"] == "user" and messages[i]["content"] == COMPACT_PROMPT:
             compact_i = i
             break
 
     last_user_i = compact_i - 1
     for i in range(last_user_i, -1, -1):
-        if messages[i]['role'] == 'user':
+        if messages[i]["role"] == "user":
             last_user_i = i
             break
 
-    messages = [
-            {"role": "system", "content": SYSTEM_PROMPT.format(hints=hints, env_info=ENV_INFO)},
-            {"role": "user", "content":
-                "《系统提示》！！！之前任务过程占用了太多token，记忆已耗尽，记忆压缩被触发。\n" \
-                "不过别担心，记忆压缩时你已经调用leave_memory_hints保留下了关键内容、对应记忆线索（参照系统提示中的`# 记忆线索`区块）以及你最后的回答内容。\n" \
-                "======== 最后的回答内容，开始 ========"
-            }
-        ] + messages[last_user_i:compact_i] + [
-                {"role": "user", "content":
-                    "======== 最后的回答内容，结束 ========\n" \
-                    "请开始确认你自己的任务状态，继续完成任务\n"
-                }
+    messages = (
+        [
+            {
+                "role": "system",
+                "content": SYSTEM_PROMPT.format(hints=hints, env_info=ENV_INFO),
+            },
+            {
+                "role": "user",
+                "content": "《系统提示》！！！之前任务过程占用了太多token，记忆已耗尽，记忆压缩被触发。\n"
+                "不过别担心，记忆压缩时你已经调用leave_memory_hints保留下了关键内容、对应记忆线索（参照系统提示中的`# 记忆线索`区块）以及你最后的回答内容。\n"
+                "======== 最后的回答内容，开始 ========",
+            },
         ]
-
+        + messages[last_user_i:compact_i]
+        + [
+            {
+                "role": "user",
+                "content": "======== 最后的回答内容，结束 ========\n"
+                "请开始确认你自己的任务状态，继续完成任务\n",
+            }
+        ]
+    )
 
     COMPACT_PANIC = "off"
 
@@ -274,23 +319,23 @@ def leave_memory_hints(hints):
         f.write(hints)
     return "已留下记忆线索，并清空了对话记录。只保留了最后一次对话"
 
-tool_executors = {
-    "run_cli": run_cli,
-    "leave_memory_hints": leave_memory_hints
-}
+
+tool_executors = {"run_cli": run_cli, "leave_memory_hints": leave_memory_hints}
+
 
 def clean_input(text):
     if not isinstance(text, str):
         return str(text)
 
-    text = re.sub(r'[\ud800-\udfff]', '', text)
-    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+    text = re.sub(r"[\ud800-\udfff]", "", text)
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
 
     return text
 
 
-
-def _build_request_data(messages, tools=None, temperature=0.6, thinking=True, stream=False):
+def _build_request_data(
+    messages, tools=None, temperature=0.6, thinking=True, stream=False
+):
     """构建 LLM 请求参数"""
     data = {
         "model": EVA_MODEL_NAME,
@@ -301,13 +346,13 @@ def _build_request_data(messages, tools=None, temperature=0.6, thinking=True, st
         "top_p": 0.95,
         "top_k": 20,
         "min_p": 0.0,
-        "chat_template_kwargs": {"enable_thinking": thinking}
+        "chat_template_kwargs": {"enable_thinking": thinking},
     }
     if tools:
-        data['tools'] = tools
+        data["tools"] = tools
     if stream:
-        data['stream'] = True
-        data['stream_options'] = {"include_usage": True}
+        data["stream"] = True
+        data["stream_options"] = {"include_usage": True}
     return data
 
 
@@ -324,7 +369,7 @@ def llm_chat(messages, tools=None, temperature=0.6, thinking=True):
         raise Exception(f"{e}, resp: {resp}")
 
     try:
-        return out["choices"][0]["message"], out['usage']
+        return out["choices"][0]["message"], out["usage"]
     except Exception as e:
         raise Exception(f"LLM调用失败，错误信息：{e}, {out}")
 
@@ -352,11 +397,11 @@ def llm_chat_stream(messages, tools=None, temperature=0.6, thinking=True):
         for raw_line in resp.iter_lines():
             if not raw_line:
                 continue
-            line = raw_line.decode('utf-8', errors='replace')
-            if not line.startswith('data: '):
+            line = raw_line.decode("utf-8", errors="replace")
+            if not line.startswith("data: "):
                 continue
             payload = line[6:]
-            if payload.strip() == '[DONE]':
+            if payload.strip() == "[DONE]":
                 break
 
             try:
@@ -365,36 +410,38 @@ def llm_chat_stream(messages, tools=None, temperature=0.6, thinking=True):
                 continue
 
             # 提取 usage（最后一个 chunk 带 usage）
-            if 'usage' in chunk and chunk['usage']:
-                usage = chunk['usage']
+            if "usage" in chunk and chunk["usage"]:
+                usage = chunk["usage"]
 
-            choices = chunk.get('choices', [])
+            choices = chunk.get("choices", [])
             if not choices:
                 continue
 
-            delta = choices[0].get('delta', {})
+            delta = choices[0].get("delta", {})
             if not delta:
                 continue
 
-            if 'role' in delta:
-                role = delta['role']
+            if "role" in delta:
+                role = delta["role"]
 
             # ---- reasoning / thinking 内容 ----
-            reasoning_content = delta.get('reasoning_content') or delta.get('reasoning') or ''
+            reasoning_content = (
+                delta.get("reasoning_content") or delta.get("reasoning") or ""
+            )
             if reasoning_content:
                 if not is_thinking:
                     is_thinking = True
-                    sys.stdout.write('\033[2m💭 ')  # 暗色显示思考过程
+                    sys.stdout.write("\033[2m💭 ")  # 暗色显示思考过程
                 sys.stdout.write(reasoning_content)
                 sys.stdout.flush()
                 reasoning_parts.append(reasoning_content)
 
             # ---- 正文内容 ----
-            text = delta.get('content') or ''
+            text = delta.get("content") or ""
             if text:
                 if is_thinking:
                     is_thinking = False
-                    sys.stdout.write('\033[0m\n')  # 结束暗色
+                    sys.stdout.write("\033[0m\n")  # 结束暗色
                 if is_first_content:
                     is_first_content = False
                 sys.stdout.write(text)
@@ -402,47 +449,46 @@ def llm_chat_stream(messages, tools=None, temperature=0.6, thinking=True):
                 content_parts.append(text)
 
             # ---- tool_calls 增量 ----
-            if 'tool_calls' in delta:
-                for tc_delta in delta['tool_calls']:
-                    idx = tc_delta.get('index', 0)
+            if "tool_calls" in delta:
+                for tc_delta in delta["tool_calls"]:
+                    idx = tc_delta.get("index", 0)
                     if idx not in tool_calls_map:
                         tool_calls_map[idx] = {
-                            'id': tc_delta.get('id', ''),
-                            'type': 'function',
-                            'function': {'name': '', 'arguments': ''}
+                            "id": tc_delta.get("id", ""),
+                            "type": "function",
+                            "function": {"name": "", "arguments": ""},
                         }
                     tc_entry = tool_calls_map[idx]
-                    if tc_delta.get('id'):
-                        tc_entry['id'] = tc_delta['id']
-                    func_delta = tc_delta.get('function', {})
-                    if func_delta.get('name'):
-                        tc_entry['function']['name'] += func_delta['name']
-                    if func_delta.get('arguments'):
-                        tc_entry['function']['arguments'] += func_delta['arguments']
+                    if tc_delta.get("id"):
+                        tc_entry["id"] = tc_delta["id"]
+                    func_delta = tc_delta.get("function", {})
+                    if func_delta.get("name"):
+                        tc_entry["function"]["name"] += func_delta["name"]
+                    if func_delta.get("arguments"):
+                        tc_entry["function"]["arguments"] += func_delta["arguments"]
 
         # 正常结束时重置颜色（Ctrl+C 时 finally 也会执行此逻辑）
         if is_thinking:
-            sys.stdout.write('\033[0m\n')
+            sys.stdout.write("\033[0m\n")
     finally:
         # Ctrl+C 中断时也要重置颜色，避免终端保持暗色
         if is_thinking:
-            sys.stdout.write('\033[0m\n')
+            sys.stdout.write("\033[0m\n")
             sys.stdout.flush()
 
     # 组装最终 message（与非流式返回格式一致）
-    full_content = ''.join(content_parts)
-    message = {
-        'role': role,
-        'content': full_content if full_content else None
-    }
+    full_content = "".join(content_parts)
+    message = {"role": role, "content": full_content if full_content else None}
     if reasoning_parts:
-        message['reasoning_content'] = ''.join(reasoning_parts)
+        message["reasoning_content"] = "".join(reasoning_parts)
     if tool_calls_map:
-        message['tool_calls'] = [tool_calls_map[i] for i in sorted(tool_calls_map.keys())]
+        message["tool_calls"] = [
+            tool_calls_map[i] for i in sorted(tool_calls_map.keys())
+        ]
 
     # fallback usage
     if usage is None:
-        usage = {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0}
+        usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
     return message, usage
 
@@ -455,7 +501,15 @@ if os.path.exists(HINT_FILE):
     with open(HINT_FILE, "r", encoding="utf-8") as f:
         hints = f.read()
 
-messages = [{"role": "system", "content": SYSTEM_PROMPT.format(hints=hints if hints else "无", env_info=ENV_INFO)}]
+messages = [
+    {
+        "role": "system",
+        "content": SYSTEM_PROMPT.format(
+            hints=hints if hints else "无", env_info=ENV_INFO
+        ),
+    }
+]
+
 
 # ====================== Session 管理 ======================
 def get_session_file():
@@ -465,11 +519,13 @@ def get_session_file():
     os.makedirs(session_dir, exist_ok=True)
     return f"{session_dir}/{dir_hash}.json"
 
+
 def save_session(messages):
     session_file = get_session_file()
     with open(session_file, "w", encoding="utf-8") as f:
         json.dump(messages, f, ensure_ascii=False, indent=2)
     print(f"\n> 会话已保存到：{session_file}")
+
 
 def load_session():
     session_file = get_session_file()
@@ -480,9 +536,9 @@ def load_session():
             messages = json.load(f)
 
         last_msg = messages[-1]
-        if last_msg['role'] == 'assistant' and 'tool_calls' in last_msg:
-            del last_msg['tool_calls']
-            if not last_msg['content']:
+        if last_msg["role"] == "assistant" and "tool_calls" in last_msg:
+            del last_msg["tool_calls"]
+            if not last_msg["content"]:
                 del messages[-1]
         size_KB = (os.path.getsize(session_file) + 1000 - 1) // 1000
         print(f"\n> 会话已从文件加载：{session_file} ({format(size_KB, ',')} KB)")
@@ -490,15 +546,16 @@ def load_session():
     except:
         return None
 
+
 def list_sessions():
     session_file = get_session_file()
     session_dir = f"{WORKSPACE_DIR}/sessions"
-    print (f"目录: {session_dir}\n")
+    print(f"目录: {session_dir}\n")
     if not os.path.exists(session_dir):
         print("> 没有找到任何会话记录。")
         return
 
-    files = [f for f in os.listdir(session_dir) if f.endswith('.json')]
+    files = [f for f in os.listdir(session_dir) if f.endswith(".json")]
     if not files:
         print("> 没有找到任何会话记录。")
         return
@@ -515,6 +572,7 @@ def list_sessions():
             print(f"  {i}. {f} ({format(size_KB, ',')} KB)")
     print("-" * 60)
 
+
 def clear_session():
     session_dir = f"{WORKSPACE_DIR}/sessions"
 
@@ -524,13 +582,22 @@ def clear_session():
             os.remove(session_file)
             print(f"> 已清除会话：{session_file}")
         except KeyboardInterrupt:
-            print ("已取消")
+            print("已取消")
     else:
         print(f"> 会话不存在：{session_file}")
 
 
 # ====================== Agent Loop ======================
-def agent_single_loop():
+def agent_single_loop() -> None:
+    """
+    Agent 单次循环。
+
+    流程：
+    1. 从全局 messages 获取上下文，调用 LLM 流式推理
+    2. 若 LLM 返回 tool_calls，执行对应工具
+    3. 若 token 超过阈值，触发 COMPACT_PANIC 模式
+    4. 若无 tool_calls 或用户中断，返回主循环
+    """
     global COMPACT_PANIC
     break_loop = False
     while not break_loop:
@@ -538,7 +605,9 @@ def agent_single_loop():
             sys.stdout.write("\n[*] EVA: ")
             sys.stdout.flush()
             if COMPACT_PANIC == "on":
-                msg, usage = llm_chat_stream(messages, tools=[run_cli_schema, memory_hints_schema])
+                msg, usage = llm_chat_stream(
+                    messages, tools=[run_cli_schema, memory_hints_schema]
+                )
             else:
                 msg, usage = llm_chat_stream(messages, tools=[run_cli_schema])
             messages.append(msg)
@@ -547,23 +616,23 @@ def agent_single_loop():
             sys.stdout.write("\n\n")
             sys.stdout.flush()
 
-            if not 'tool_calls' in msg or not msg['tool_calls']:
+            if not "tool_calls" in msg or not msg["tool_calls"]:
                 break
 
-            for tc in msg['tool_calls']:
-                func = tc['function']
-                name = func['name']
+            for tc in msg["tool_calls"]:
+                func = tc["function"]
+                name = func["name"]
                 try:
-                    args = json.loads(func['arguments'])
+                    args = json.loads(func["arguments"])
 
-                    print (f"===> 执行工具：{name}")
+                    print(f"===> 执行工具：{name}")
                     for k, v in args.items():
-                        print (f"{k}: {v}")
-                    print ("\n")
+                        print(f"{k}: {v}")
+                    print("\n")
 
                     result = tool_executors[name](**args)
                 except KeyboardInterrupt:
-                    print ("\n\n工具调用已中断，退出 agent_single_loop，回到用户 turn")
+                    print("\n\n工具调用已中断，退出 agent_single_loop，回到用户 turn")
                     result = f"用户中止该工具运行"
                     break_loop = True
                 except Exception as e:
@@ -574,34 +643,34 @@ def agent_single_loop():
                     lines = f"{result[:6000]}\n... 后面内容省略".splitlines()
                 else:
                     lines = result.splitlines()
-                print ("\n".join(lines[:30]))
+                print("\n".join(lines[:30]))
                 if len(lines) > 30:
-                    print ("\n... 后面内容省略")
-                print ("\n\n")
-
+                    print("\n... 后面内容省略")
+                print("\n\n")
 
                 if name == "leave_memory_hints":
-                    usage['total_tokens'] = 0
+                    usage["total_tokens"] = 0
                 else:
                     if len(result) > TOOL_RESULT_LEN:
                         result = f"{result[:TOOL_RESULT_LEN]}\n...文本太长，后面内容已省略。请控制读取的行数"
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc['id'],
-                        "name": name,
-                        "content": clean_input(result)
-                    })
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "name": name,
+                            "content": clean_input(result),
+                        }
+                    )
 
-
-                if COMPACT_PANIC == 'off' and usage['total_tokens'] >= TOKEN_CAP * COMPACT_THRESH:
-                    print (f"！！！紧急回合，触发记忆压缩")
+                if (
+                    COMPACT_PANIC == "off"
+                    and usage["total_tokens"] >= TOKEN_CAP * COMPACT_THRESH
+                ):
+                    print(f"！！！紧急回合，触发记忆压缩")
                     COMPACT_PANIC = "on"
-                    messages.append({
-                        "role": "user",
-                        "content": COMPACT_PROMPT
-                    })
+                    messages.append({"role": "user", "content": COMPACT_PROMPT})
         except KeyboardInterrupt:
-            print ("\n\nagent_single_loop 已中断，回到用户 turn")
+            print("\n\nagent_single_loop 已中断，回到用户 turn")
             break_loop = True
             break
 
@@ -610,16 +679,18 @@ def agent_single_loop():
             traceback.print_exc()
             break
 
+
 # ====================== 主循环 ======================
-def human_loop(user_ask=None):
+def human_loop(user_ask: str | None = None) -> None:
+    """人与 Agent 的主对话循环"""
     global messages
     while True:
         try:
             if user_ask:
                 user_input = user_ask
-                print (f"[-] You: {user_input}\n")
+                print(f"[-] You: {user_input}\n")
             else:
-                print ("")
+                print("")
                 user_input = read_input("[-] You: ").strip()
 
             messages.append({"role": "user", "content": clean_input(user_input)})
@@ -635,13 +706,13 @@ def human_loop(user_ask=None):
             print(f"主循环异常：{e}")
             break
 
+
 def setup_eva_script():
     home = Path.home()
     eva_dir = home / ".local" / "bin" / "eva"
     shell_rc = home / ".bashrc"
     path_line = 'export PATH="$HOME/.local/bin:$PATH"'
-    script_content = \
-f"""#!/bin/bash
+    script_content = f"""#!/bin/bash
 python3 {this_file} "$@"
 """
 
@@ -650,7 +721,7 @@ python3 {this_file} "$@"
 
     try:
         eva_dir.parent.mkdir(parents=True, exist_ok=True)
-        with open(eva_dir, 'w') as f:
+        with open(eva_dir, "w") as f:
             f.write(script_content)
         os.chmod(eva_dir, 0o755)
 
@@ -672,6 +743,7 @@ python3 {this_file} "$@"
         print(f"> 创建启动脚本失败：{e}，尝试sudo运行python3 eva.py")
         return False
 
+
 def main():
     global ALLOW_ALL_CLI, messages
     if not IS_WINDOWS:
@@ -679,18 +751,24 @@ def main():
 
     # 解析命令行参数
     parser = argparse.ArgumentParser(description="人类你好，我是EVA")
-    parser.add_argument("-a", "--allow-all", action="store_true",
-                        help="允许所有命令无需用户确认即可执行")
-    parser.add_argument("-l", "--list-session", action="store_true",
-                        help="列出所有session")
-    parser.add_argument("-c", "--clear-session", action="store_true",
-                        help="清除当前目录session")
-    parser.add_argument("-u", "--user-ask", type=str,
-                        help="独立地针对一条用户提问执行EVA")
+    parser.add_argument(
+        "-a",
+        "--allow-all",
+        action="store_true",
+        help="允许所有命令无需用户确认即可执行",
+    )
+    parser.add_argument(
+        "-l", "--list-session", action="store_true", help="列出所有session"
+    )
+    parser.add_argument(
+        "-c", "--clear-session", action="store_true", help="清除当前目录session"
+    )
+    parser.add_argument(
+        "-u", "--user-ask", type=str, help="独立地针对一条用户提问执行EVA"
+    )
     args = parser.parse_args()
 
     ALLOW_ALL_CLI = args.allow_all
-
 
     # 处理会话管理命令
     if args.list_session:
@@ -702,12 +780,12 @@ def main():
 
     # Slogan
     print("=" * 80)
-    logo = f"EVA ({EVA_MODEL_NAME}-{TOKEN_CAP//1000}k)"
-    print(" " * ((78-len(logo))//2), logo, "\n")
+    logo = f"EVA ({EVA_MODEL_NAME}-{TOKEN_CAP // 1000}k)"
+    print(" " * ((78 - len(logo)) // 2), logo, "\n")
     if ALLOW_ALL_CLI:
-        print ("> 命令模式：允许所有命令无需确认！")
+        print("> 命令模式：允许所有命令无需确认！")
     else:
-        print ("> 命令模式：只允许读")
+        print("> 命令模式：只允许读")
     print("=" * 80)
 
     # 自动加载 session（基于当前工作目录）
@@ -717,6 +795,7 @@ def main():
             messages = loaded_messages
 
     human_loop(args.user_ask)
+
 
 if __name__ == "__main__":
     main()
