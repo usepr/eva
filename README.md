@@ -94,6 +94,4 @@ hints.md文件内容示例：
  </picture>
 </a>
 
-**古法编程、匠心打造** [狗头]
-
 [![linux.do](https://shorturl.at/ggSqS)](https://linux.do)

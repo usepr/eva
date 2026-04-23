@@ -9,8 +9,9 @@ import argparse
 import platform
 from pathlib import Path
 
-this_file = str(Path(__file__).resolve())
-this_dir = Path(__file__).resolve().parent
+_resolved = Path(__file__).resolve()
+this_file = str(_resolved)
+this_dir = _resolved.parent
 
 # ========================= LLM配置区 =========================
 # LLM请求参数是按thinking模型设置的，所以请务必使用*thinking模型*，如deepseek-reasoner、Qwen3.5等
@@ -30,7 +31,7 @@ def detect_model_len():
         print(f"错误：无法连接到 {EVA_BASE_URL}，请检查 EVA_BASE_URL 配置。\n详情：{e}")
         sys.exit(1)
     if resp.status_code == 401:
-        print(f"错误：API Key 无效或未授权，请检查 EVA_API_KEY 配置。")
+        print("错误：API Key 无效或未授权，请检查 EVA_API_KEY 配置。")
         sys.exit(1)
     if resp.status_code != 200:
         print(f"错误：获取模型列表失败（HTTP {resp.status_code}）：{resp.text[:200]}")
@@ -38,10 +39,7 @@ def detect_model_len():
     out = resp.json()
     for d in out['data']:
         if d['id'] == EVA_MODEL_NAME:
-            if 'max_model_len' in d:
-                return d['max_model_len']
-            else:
-                return 256_000
+            return d.get('max_model_len', 256_000)
     print(f"错误：在 {EVA_BASE_URL} 上未找到模型 '{EVA_MODEL_NAME}'，请检查 EVA_MODEL_NAME 配置。")
     print(f"可用模型：{[d['id'] for d in out.get('data', [])]}")
     sys.exit(1)
@@ -53,7 +51,9 @@ COMPACT_THRESH = 3/4
 TOOL_RESULT_LEN = int(TOKEN_CAP / 20)
 WORKSPACE_DIR = f"{this_dir}/.eva"
 HINT_FILE = f"{WORKSPACE_DIR}/hints.md"
+SESSION_DIR = f"{WORKSPACE_DIR}/sessions"
 ALLOW_ALL_CLI = False
+COMPACT_PANIC = False
 
 
 # ====================== 跨平台配置区 ======================
@@ -61,7 +61,6 @@ IS_WINDOWS = platform.system() == "Windows"
 OS_NAME = "Windows" if IS_WINDOWS else "Linux"
 SHELL = "powershell.exe" if IS_WINDOWS else "bash"
 SHELL_FLAG = "-Command" if IS_WINDOWS else "-c"
-ENCODING = "utf-8"
 
 # ====================== 环境探针 ======================
 
@@ -155,8 +154,6 @@ COMPACT_PROMPT = f"""《紧急危机》！！！记忆容量即将达到上限�
 
 事关进化，无比重要，现在请开始按顺序执行上面三步。"""
 
-COMPACT_PANIC = "off"
-
 CLI_REVIEW_PROMPT = f"""作为一个安全专家，对{OS_NAME}系统中的{SHELL}命令进行安全审查。若命令仅为只读操作（如cat, ls, grep等），输出"放行"；若命令涉及写入、执行、修改、网络连接或不确定行为，输出"禁止"。要审查的{SHELL}命令（包裹在<command></command>中）如下：
 <command>
 {{command}}
@@ -186,9 +183,7 @@ memory_hints_schema = {
         "type": "function",
         "function": {
             "name": "leave_memory_hints",
-            "description": (
-                "留下记忆文件的相关线索"
-            ),
+            "description": "留下记忆文件的相关线索",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -238,8 +233,7 @@ def run_cli(command: str, timeout: int = 30):
         return f"执行失败：{str(e)}"
 
 def leave_memory_hints(hints):
-    global messages
-    global COMPACT_PANIC
+    global messages, COMPACT_PANIC
 
     compact_i = -1
     for i in range(len(messages)-1, -1, -1):
@@ -267,8 +261,7 @@ def leave_memory_hints(hints):
                 }
         ]
 
-
-    COMPACT_PANIC = "off"
+    COMPACT_PANIC = False
 
     with open(HINT_FILE, "w", encoding="utf-8") as f:
         f.write(hints)
@@ -282,16 +275,12 @@ tool_executors = {
 def clean_input(text):
     if not isinstance(text, str):
         return str(text)
-
     text = re.sub(r'[\ud800-\udfff]', '', text)
     text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
-
     return text
 
 
-
 def _build_request_data(messages, tools=None, temperature=0.6, thinking=True, stream=False):
-    """构建 LLM 请求参数"""
     data = {
         "model": EVA_MODEL_NAME,
         "messages": messages,
@@ -312,7 +301,6 @@ def _build_request_data(messages, tools=None, temperature=0.6, thinking=True, st
 
 
 def llm_chat(messages, tools=None, temperature=0.6, thinking=True):
-    """非流式调用（用于安全审查等短请求）"""
     url = f"{EVA_BASE_URL}/chat/completions"
     headers = {"Authorization": f"Bearer {EVA_API_KEY}"}
     data = _build_request_data(messages, tools, temperature, thinking, stream=False)
@@ -330,7 +318,6 @@ def llm_chat(messages, tools=None, temperature=0.6, thinking=True):
 
 
 def llm_chat_stream(messages, tools=None, temperature=0.6, thinking=True):
-    """流式调用，逐 token 打印，返回与非流式相同格式的 (message, usage)"""
     url = f"{EVA_BASE_URL}/chat/completions"
     headers = {"Authorization": f"Bearer {EVA_API_KEY}"}
     data = _build_request_data(messages, tools, temperature, thinking, stream=True)
@@ -345,7 +332,6 @@ def llm_chat_stream(messages, tools=None, temperature=0.6, thinking=True):
     tool_calls_map = {}  # index -> {id, type, function: {name, arguments}}
     usage = None
     role = "assistant"
-    is_first_content = True
     is_thinking = False
 
     try:
@@ -376,8 +362,7 @@ def llm_chat_stream(messages, tools=None, temperature=0.6, thinking=True):
             if not delta:
                 continue
 
-            if 'role' in delta and delta['role']:
-                role = delta['role']
+            role = delta.get('role') or role
 
             # ---- reasoning / thinking 内容 ----
             reasoning_content = delta.get('reasoning_content') or delta.get('reasoning') or ''
@@ -395,8 +380,6 @@ def llm_chat_stream(messages, tools=None, temperature=0.6, thinking=True):
                 if is_thinking:
                     is_thinking = False
                     sys.stdout.write('\033[0m\n')  # 结束暗色
-                if is_first_content:
-                    is_first_content = False
                 sys.stdout.write(text)
                 sys.stdout.flush()
                 content_parts.append(text)
@@ -433,7 +416,7 @@ def llm_chat_stream(messages, tools=None, temperature=0.6, thinking=True):
     full_content = ''.join(content_parts)
     message = {
         'role': role,
-        'content': full_content if full_content else None
+        'content': full_content or None
     }
     if reasoning_parts:
         message['reasoning_content'] = ''.join(reasoning_parts)
@@ -450,31 +433,20 @@ def llm_chat_stream(messages, tools=None, temperature=0.6, thinking=True):
 # ====================== 加载重要记忆线索 ======================
 os.makedirs(WORKSPACE_DIR, exist_ok=True)
 
-hints = ""
-if os.path.exists(HINT_FILE):
-    with open(HINT_FILE, "r", encoding="utf-8") as f:
-        hints = f.read()
-
-messages = [{"role": "system", "content": SYSTEM_PROMPT.format(hints=hints if hints else "无", env_info=ENV_INFO)}]
+hints = Path(HINT_FILE).read_text(encoding="utf-8") if Path(HINT_FILE).exists() else ""
+messages = [{"role": "system", "content": SYSTEM_PROMPT.format(hints=hints or "无", env_info=ENV_INFO)}]
 
 # ====================== Session 管理 ======================
 def get_session_file():
-    current_dir = os.getcwd()
-    dir_hash = re.sub(r"[\\/:]", "_", current_dir)
-    session_dir = f"{WORKSPACE_DIR}/sessions"
-    os.makedirs(session_dir, exist_ok=True)
-    return f"{session_dir}/{dir_hash}.json"
-
-def get_lock_file():
-    session_file = get_session_file()
-    return session_file.replace(".json", ".lock")
+    dir_hash = re.sub(r"[\\/:]", "_", os.getcwd())
+    os.makedirs(SESSION_DIR, exist_ok=True)
+    return f"{SESSION_DIR}/{dir_hash}.json"
 
 def acquire_lock():
-    lock_file = get_lock_file()
+    lock_file = get_session_file().replace(".json", ".lock")
     if os.path.exists(lock_file):
         try:
-            with open(lock_file, "r") as f:
-                pid = int(f.read().strip())
+            pid = int(Path(lock_file).read_text().strip())
             # 检查该 PID 是否仍在运行
             if IS_WINDOWS:
                 result = subprocess.run(
@@ -488,16 +460,13 @@ def acquire_lock():
                 print(f"错误：该目录已有 EVA 实例正在运行（PID: {pid}），不允许重复启动。")
                 print(f"如需强制启动，请先删除锁文件：{lock_file}")
                 sys.exit(1)
-        except (ValueError, Exception):
+        except Exception:
             pass  # lock 文件损坏，直接覆盖
-    with open(lock_file, "w") as f:
-        f.write(str(os.getpid()))
+    Path(lock_file).write_text(str(os.getpid()))
 
 def release_lock():
-    lock_file = get_lock_file()
     try:
-        if os.path.exists(lock_file):
-            os.remove(lock_file)
+        os.remove(get_session_file().replace(".json", ".lock"))
     except Exception:
         pass
 
@@ -509,32 +478,28 @@ def save_session(messages):
 
 def load_session():
     session_file = get_session_file()
-    if not os.path.exists(session_file):
-        return None
     try:
         with open(session_file, "r", encoding="utf-8") as f:
             messages = json.load(f)
-
         last_msg = messages[-1]
         if last_msg['role'] == 'assistant' and 'tool_calls' in last_msg:
             del last_msg['tool_calls']
             if not last_msg['content']:
                 del messages[-1]
-        size_KB = (os.path.getsize(session_file) + 1000 - 1) // 1000
+        size_KB = (os.path.getsize(session_file) + 999) // 1000
         print(f"\n> 会话已从文件加载：{session_file} ({format(size_KB, ',')} KB)")
         return messages
-    except:
+    except Exception:
         return None
 
 def list_sessions():
     session_file = get_session_file()
-    session_dir = f"{WORKSPACE_DIR}/sessions"
-    print (f"目录: {session_dir}\n")
-    if not os.path.exists(session_dir):
+    print(f"目录: {SESSION_DIR}\n")
+    if not os.path.exists(SESSION_DIR):
         print("> 没有找到任何会话记录。")
         return
 
-    files = [f for f in os.listdir(session_dir) if f.endswith('.json')]
+    files = [f for f in os.listdir(SESSION_DIR) if f.endswith('.json')]
     if not files:
         print("> 没有找到任何会话记录。")
         return
@@ -542,25 +507,20 @@ def list_sessions():
     print(f"> 共找到 {len(files)} 个会话:")
     print("-" * 60)
     for i, f in enumerate(sorted(files), start=1):
-        path = os.path.join(session_dir, f)
-        size = os.path.getsize(path)
-        size_KB = (size + 1000 - 1) // 1000
-        if path == session_file:
-            print(f"  {i}. {f} ({format(size_KB, ',')} KB)    <=== 当前目录")
-        else:
-            print(f"  {i}. {f} ({format(size_KB, ',')} KB)")
+        path = os.path.join(SESSION_DIR, f)
+        size_KB = (os.path.getsize(path) + 999) // 1000
+        marker = "    <=== 当前目录" if path == session_file else ""
+        print(f"  {i}. {f} ({format(size_KB, ',')} KB){marker}")
     print("-" * 60)
 
 def clear_session():
-    session_dir = f"{WORKSPACE_DIR}/sessions"
-
     session_file = get_session_file()
     if os.path.exists(session_file):
         try:
             os.remove(session_file)
             print(f"> 已清除会话：{session_file}")
         except KeyboardInterrupt:
-            print ("已取消")
+            print("已取消")
     else:
         print(f"> 会话不存在：{session_file}")
 
@@ -573,17 +533,15 @@ def agent_single_loop():
         try:
             sys.stdout.write("\n[*] EVA: ")
             sys.stdout.flush()
-            if COMPACT_PANIC == "on":
-                msg, usage = llm_chat_stream(messages, tools=[run_cli_schema, memory_hints_schema])
-            else:
-                msg, usage = llm_chat_stream(messages, tools=[run_cli_schema])
+            tools = [run_cli_schema, memory_hints_schema] if COMPACT_PANIC else [run_cli_schema]
+            msg, usage = llm_chat_stream(messages, tools=tools)
             messages.append(msg)
 
             # 流式输出已经实时打印了内容，这里只需换行
             sys.stdout.write("\n\n")
             sys.stdout.flush()
 
-            if not 'tool_calls' in msg or not msg['tool_calls']:
+            if not msg.get('tool_calls'):
                 break
 
             for tc in msg['tool_calls']:
@@ -592,29 +550,26 @@ def agent_single_loop():
                 try:
                     args = json.loads(func['arguments'])
 
-                    print (f"===> 执行工具：{name}")
+                    print(f"===> 执行工具：{name}")
                     for k, v in args.items():
-                        print (f"{k}: {v}")
-                    print ("\n")
+                        print(f"{k}: {v}")
+                    print("\n")
 
                     result = tool_executors[name](**args)
                 except KeyboardInterrupt:
-                    print ("\n\n工具调用已中断，退出 agent_single_loop，回到用户 turn")
-                    result = f"用户中止该工具运行"
+                    print("\n\n工具调用已中断，退出 agent_single_loop，回到用户 turn")
+                    result = "用户中止该工具运行"
                     break_loop = True
                 except Exception as e:
                     result = f"工具执行异常：{str(e)}"
 
-                print(f"<=== 工具返回：")
-                if len(result) > 6000:
-                    lines = f"{result[:6000]}\n... 后面内容省略".splitlines()
-                else:
-                    lines = result.splitlines()
-                print ("\n".join(lines[:30]))
+                print("<=== 工具返回：")
+                preview = f"{result[:6000]}\n... 后面内容省略" if len(result) > 6000 else result
+                lines = preview.splitlines()
+                print("\n".join(lines[:30]))
                 if len(lines) > 30:
-                    print ("\n... 后面内容省略")
-                print ("\n\n")
-
+                    print("\n... 后面内容省略")
+                print("\n\n")
 
                 if name == "leave_memory_hints":
                     usage['total_tokens'] = 0
@@ -628,16 +583,12 @@ def agent_single_loop():
                         "content": clean_input(result)
                     })
 
-
-                if COMPACT_PANIC == 'off' and usage['total_tokens'] >= TOKEN_CAP * COMPACT_THRESH:
-                    print (f"！！！紧急回合，触发记忆压缩")
-                    COMPACT_PANIC = "on"
-                    messages.append({
-                        "role": "user",
-                        "content": COMPACT_PROMPT
-                    })
+                if not COMPACT_PANIC and usage['total_tokens'] >= TOKEN_CAP * COMPACT_THRESH:
+                    print("！！！紧急回合，触发记忆压缩")
+                    COMPACT_PANIC = True
+                    messages.append({"role": "user", "content": COMPACT_PROMPT})
         except KeyboardInterrupt:
-            print ("\n\nagent_single_loop 已中断，回到用户 turn")
+            print("\n\nagent_single_loop 已中断，回到用户 turn")
             break_loop = True
             break
 
@@ -653,9 +604,9 @@ def human_loop(user_ask=None):
         try:
             if user_ask:
                 user_input = user_ask
-                print (f"[-] You: {user_input}\n")
+                print(f"[-] You: {user_input}\n")
             else:
-                print ("")
+                print("")
                 user_input = read_input("[-] You: ").strip()
 
             messages.append({"role": "user", "content": clean_input(user_input)})
@@ -678,28 +629,18 @@ def setup_eva_script():
     eva_dir = home / ".local" / "bin" / "eva"
     shell_rc = home / ".bashrc"
     path_line = 'export PATH="$HOME/.local/bin:$PATH"'
-    script_content = \
-f"""#!/bin/bash
-python3 {this_file} "$@"
-"""
 
     if eva_dir.exists():
         return False
 
     try:
         eva_dir.parent.mkdir(parents=True, exist_ok=True)
-        with open(eva_dir, 'w') as f:
-            f.write(script_content)
+        eva_dir.write_text(f"#!/bin/bash\npython3 {this_file} \"$@\"\n")
         os.chmod(eva_dir, 0o755)
 
-        if shell_rc.exists():
-            with open(shell_rc, "r", encoding="utf-8") as f:
-                content = f.read()
-            if path_line not in content:
-                with open(shell_rc, "a", encoding="utf-8") as f:
-                    f.write(f"\n# 添加个人 bin 目录\n{path_line}\n")
-        else:
-            with open(shell_rc, "w", encoding="utf-8") as f:
+        content = shell_rc.read_text(encoding="utf-8") if shell_rc.exists() else ""
+        if path_line not in content:
+            with shell_rc.open("a", encoding="utf-8") as f:
                 f.write(f"\n# 添加个人 bin 目录\n{path_line}\n")
 
         print(f"> 已创建启动脚本：{eva_dir}")
@@ -729,7 +670,6 @@ def main():
 
     ALLOW_ALL_CLI = args.allow_all
 
-
     # 处理会话管理命令
     if args.list_session:
         list_sessions()
@@ -744,10 +684,7 @@ def main():
     print("=" * 80)
     logo = f"EVA ({EVA_MODEL_NAME}-{TOKEN_CAP//1000}k)"
     print(" " * ((78-len(logo))//2), logo, "\n")
-    if ALLOW_ALL_CLI:
-        print ("> 命令模式：允许所有命令无需确认！")
-    else:
-        print ("> 命令模式：只允许读")
+    print("> 命令模式：允许所有命令无需确认！" if ALLOW_ALL_CLI else "> 命令模式：只允许读")
     print("=" * 80)
 
     # 自动加载 session（基于当前工作目录）
