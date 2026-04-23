@@ -739,7 +739,8 @@ def main():
         return
 
     # Slogan
-    acquire_lock()
+    if not args.user_ask:
+        acquire_lock()
     print("=" * 80)
     logo = f"EVA ({EVA_MODEL_NAME}-{TOKEN_CAP//1000}k)"
     print(" " * ((78-len(logo))//2), logo, "\n")
