@@ -13,6 +13,7 @@ import sys
 import traceback
 import argparse
 import platform
+from typing import Callable
 
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -331,8 +332,10 @@ def llm_chat_stream(
     tools: list[dict] | None = None,
     temperature: float = 0.6,
     thinking: bool = True,
+    on_thinking: Callable[[str], None] | None = None,
+    on_content: Callable[[str], None] | None = None,
 ) -> tuple[dict, dict]:
-    """流式 LLM 调用，带 thinking 过程实时输出"""
+    """流式 LLM 调用。on_thinking/on_content 为回调，不传则默认输出到 stdout"""
     import requests
 
     url = f"{EVA_BASE_URL}/chat/completions"
@@ -387,20 +390,34 @@ def llm_chat_stream(
             if reasoning_content:
                 if not is_thinking:
                     is_thinking = True
-                    sys.stdout.write("\033[2m💭 ")
-                sys.stdout.write(reasoning_content)
-                sys.stdout.flush()
+                    prefix = "\033[2m💭 "
+                    if on_thinking:
+                        on_thinking(prefix)
+                    else:
+                        sys.stdout.write(prefix)
+                        sys.stdout.flush()
+                if on_thinking:
+                    on_thinking(reasoning_content)
+                else:
+                    sys.stdout.write(reasoning_content)
+                    sys.stdout.flush()
                 reasoning_parts.append(reasoning_content)
 
             text = delta.get("content") or ""
             if text:
                 if is_thinking:
                     is_thinking = False
-                    sys.stdout.write("\033[0m\n")
-                if is_first_content:
-                    is_first_content = False
-                sys.stdout.write(text)
-                sys.stdout.flush()
+                    suffix = "\033[0m\n"
+                    if on_content:
+                        on_content(suffix)
+                    else:
+                        sys.stdout.write(suffix)
+                        sys.stdout.flush()
+                if on_content:
+                    on_content(text)
+                else:
+                    sys.stdout.write(text)
+                    sys.stdout.flush()
                 content_parts.append(text)
 
             if "tool_calls" in delta:
@@ -773,12 +790,32 @@ class ToolRegistry:
 
 
 # ============================================================================
-# 15. Agent 类
+# 15. AgentResult
+# ============================================================================
+@dataclass
+class AgentResult:
+    """单步执行结果"""
+    status: str = "completed"                    # "completed" | "waiting_for_tool" | "compact_panic"
+    content: str | None = None                   # LLM 回复文本
+    reasoning: str | None = None                # thinking 过程
+    tool_calls: list = field(default_factory=list)  # 待执行的工具调用
+    tool_results: list = field(default_factory=list)  # 工具执行结果
+    usage: dict = field(default_factory=lambda: {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+
+
+# ============================================================================
+# 16. Agent 类
 # ============================================================================
 class Agent:
     """
     核心 Agent：串联 LLMClient / ToolRegistry / Memory / AgentContext。
     单一职责：管理 Agent ↔ User 的交互循环。
+
+    事件回调：
+    - on_thinking(text): thinking 片段输出
+    - on_content(text): 正文片段输出
+    - on_tool_call(name, args) -> str: 工具调用，返回执行结果
+    - on_compact_panic(): 触发记忆压缩
     """
 
     def __init__(
@@ -787,6 +824,7 @@ class Agent:
         platform: "Platform",
         ctx: AgentContext,
         memory: Memory,
+        use_default_callbacks: bool = True,
     ):
         self.config = config
         self.platform = platform
@@ -795,6 +833,30 @@ class Agent:
         self.tools = ToolRegistry(config, platform, ctx)
         self.tools.setup_builtin_tools()
 
+        # 事件回调（前端订阅）
+        self.on_thinking: Callable[[str], None] | None = None
+        self.on_content: Callable[[str], None] | None = None
+        self.on_tool_call: Callable[[str, dict], str] | None = None
+        self.on_compact_panic: Callable[[], None] | None = None
+
+        # 默认 stdout 回调（向后兼容 CLI 模式）
+        if use_default_callbacks:
+            self._setup_default_callbacks()
+
+    def _setup_default_callbacks(self) -> None:
+        """设置默认 stdout 回调（CLI 模式）"""
+
+        def on_thinking(t: str) -> None:
+            sys.stdout.write(t)
+            sys.stdout.flush()
+
+        def on_content(t: str) -> None:
+            sys.stdout.write(t)
+            sys.stdout.flush()
+
+        self.on_thinking = on_thinking
+        self.on_content = on_content
+
     def _read_input(self, prompt: str = "") -> str:
         """读取用户输入"""
         try:
@@ -802,82 +864,138 @@ class Agent:
         except EOFError:
             return ""
 
+    def step(self, user_input: str | None = None) -> AgentResult:
+        """
+        单步执行：接收用户输入，调用 LLM，返回结果。
+        如果需要工具执行，返回 status='waiting_for_tool'，调用方需调用 resume()。
+        """
+        if user_input is not None:
+            self.ctx.messages.append({"role": "user", "content": clean_input(user_input)})
+
+        return self._llm_call()
+
+    def resume(self, tool_results: list[str]) -> AgentResult:
+        """
+        工具执行完毕后继续推理。
+        tool_results 与 tool_calls 顺序一致。
+        """
+        for r in tool_results:
+            self.ctx.messages.append(r)
+        return self._llm_call()
+
+    def _llm_call(self) -> AgentResult:
+        """内部：调用 LLM，返回 AgentResult"""
+        schemas = self.tools.get_schemas()
+        if self.ctx.compact_panic != "on":
+            schemas = [
+                s for s in schemas
+                if s["function"]["name"] != "leave_memory_hints"
+            ]
+
+        msg, usage = llm_chat_stream(
+            self.ctx.messages,
+            tools=schemas,
+            on_thinking=self.on_thinking,
+            on_content=self.on_content,
+        )
+        self.ctx.messages.append(msg)
+
+        # 构建 AgentResult
+        reasoning = msg.get("reasoning_content") or None
+        content = msg.get("content") or None
+        tool_calls = [
+            {"id": tc["id"], "name": tc["function"]["name"], "args": json.loads(tc["function"]["arguments"])}
+            for tc in msg.get("tool_calls", [])
+        ]
+
+        # 检查状态
+        if tool_calls:
+            return AgentResult(
+                status="waiting_for_tool",
+                content=content,
+                reasoning=reasoning,
+                tool_calls=tool_calls,
+                usage=usage,
+            )
+
+        if self.ctx.compact_panic == "on":
+            return AgentResult(status="compact_panic", content=content, reasoning=reasoning, usage=usage)
+
+        return AgentResult(status="completed", content=content, reasoning=reasoning, usage=usage)
+
     def _single_loop(self) -> None:
         """
         单次 Agent 循环。
         流程：LLM推理 → 工具执行 → token超限检测
+        使用 step()/resume() 模式，支持回调驱动的前端。
         """
-        break_loop = False
-        while not break_loop:
+        while True:
             try:
-                sys.stdout.write("\n[*] EVA: ")
-                sys.stdout.flush()
+                result = self.step()
 
-                schemas = self.tools.get_schemas()
-                if self.ctx.compact_panic != "on":
-                    schemas = [
-                        s for s in schemas
-                        if s["function"]["name"] != "leave_memory_hints"
-                    ]
+                # 处理 compact_panic
+                if result.status == "compact_panic":
+                    print("！！！紧急回合，触发记忆压缩")
+                    compact_result = self.resume([])  # 空结果，继续压缩
+                    if compact_result.status == "completed":
+                        break
+                    continue
 
-                msg, usage = llm_chat_stream(self.ctx.messages, tools=schemas)
-                self.ctx.messages.append(msg)
+                # 处理工具调用
+                if result.status == "waiting_for_tool":
+                    tool_results = []
+                    for tc in result.tool_calls:
+                        name = tc["name"]
+                        try:
+                            print(f"===> 执行工具：{name}")
+                            for k, v in tc["args"].items():
+                                print(f"{k}: {v}")
+                            print("\n")
+                            res = self.tools.execute(name, tc["args"])
+                        except KeyboardInterrupt:
+                            print("\n\n工具调用已中断，回到用户 turn")
+                            res = "用户中止该工具运行"
+                        except Exception as e:
+                            res = f"工具执行异常：{str(e)}"
 
-                sys.stdout.write("\n\n")
-                sys.stdout.flush()
+                        print("<=== 工具返回：")
+                        if len(res) > 6000:
+                            lines = f"{res[:6000]}\n... 后面内容省略".splitlines()
+                        else:
+                            lines = res.splitlines()
+                        print("\n".join(lines[:30]))
+                        if len(lines) > 30:
+                            print("\n... 后面内容省略")
+                        print("\n\n")
 
-                if not msg.get("tool_calls"):
-                    break
+                        # 裁剪过长结果
+                        if name != "leave_memory_hints" and len(res) > self.config.tool_result_len:
+                            res = f"{res[:self.config.tool_result_len]}\n...文本太长，已省略"
 
-                for tc in msg["tool_calls"]:
-                    name = tc["function"]["name"]
-                    try:
-                        args = json.loads(tc["function"]["arguments"])
-                        print(f"===> 执行工具：{name}")
-                        for k, v in args.items():
-                            print(f"{k}: {v}")
-                        print("\n")
-                        result = self.tools.execute(name, args)
-                    except KeyboardInterrupt:
-                        print("\n\n工具调用已中断，回到用户 turn")
-                        result = "用户中止该工具运行"
-                        break_loop = True
-                    except Exception as e:
-                        result = f"工具执行异常：{str(e)}"
-
-                    print("<=== 工具返回：")
-                    if len(result) > 6000:
-                        lines = f"{result[:6000]}\n... 后面内容省略".splitlines()
-                    else:
-                        lines = result.splitlines()
-                    print("\n".join(lines[:30]))
-                    if len(lines) > 30:
-                        print("\n... 后面内容省略")
-                    print("\n\n")
-
-                    if name == "leave_memory_hints":
-                        usage["total_tokens"] = 0
-                    else:
-                        if len(result) > self.config.tool_result_len:
-                            result = f"{result[:self.config.tool_result_len]}\n...文本太长，已省略"
-                        self.ctx.messages.append({
+                        tool_results.append({
                             "role": "tool",
                             "tool_call_id": tc["id"],
                             "name": name,
-                            "content": clean_input(result),
+                            "content": clean_input(res),
                         })
 
+                    # 追加工具结果并继续
+                    self.ctx.messages.extend(tool_results)
+
+                    # 检测 token 超限
                     if (self.ctx.compact_panic == "off"
-                            and usage["total_tokens"] >= self.config.token_cap * self.config.compact_thresh):
+                            and result.usage.get("total_tokens", 0) >= self.config.token_cap * self.config.compact_thresh):
                         print("！！！紧急回合，触发记忆压缩")
                         self.ctx.compact_panic = "on"
-                        self.ctx.messages.append(
-                            {"role": "user", "content": COMPACT_PROMPT}
-                        )
+                        self.ctx.messages.append({"role": "user", "content": COMPACT_PROMPT})
+
+                    continue
+
+                # completed
+                break
 
             except KeyboardInterrupt:
                 print("\n\nagent_single_loop 已中断，回到用户 turn")
-                break_loop = True
                 break
             except Exception as e:
                 print(f"LLM 调用异常：{e}")
