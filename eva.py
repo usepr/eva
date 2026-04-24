@@ -15,26 +15,25 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # ============================================================================
-# 1. 基础设施：路径与全局状态
+# 1. 基础设施：路径
 # ============================================================================
 this_file = str(Path(__file__).resolve())
 this_dir = Path(__file__).resolve().parent
 
 
+# ============================================================================
+# 2. AgentContext
+# ============================================================================
 @dataclass
 class AgentContext:
-    """全局状态容器，替代隐式全局变量"""
-
+    """运行时状态容器"""
     messages: list = field(default_factory=list)
     compact_panic: str = "off"
     allow_all_cli: bool = False
 
 
-_ctx = AgentContext()
-
-
 # ============================================================================
-# 2. LLM 配置
+# 3. LLM 配置
 # ============================================================================
 EVA_BASE_URL = os.environ.get("EVA_BASE_URL", "https://api.deepseek.com/v1")
 EVA_MODEL_NAME = os.environ.get("EVA_MODEL_NAME", "deepseek-reasoner")
@@ -80,7 +79,7 @@ def detect_model_len() -> int:
 
 
 # ============================================================================
-# 3. EVA 内部配置
+# 4. EVA 内部配置
 # ============================================================================
 TOKEN_CAP = detect_model_len()
 COMPACT_THRESH = 3 / 4
@@ -90,17 +89,16 @@ HINT_FILE: Path = WORKSPACE_DIR / "hints.md"
 
 
 # ============================================================================
-# 4. 跨平台抽象
+# 5. Platform 抽象
 # ============================================================================
 IS_WINDOWS = platform.system() == "Windows"
 OS_NAME = "Windows" if IS_WINDOWS else "Linux"
 SHELL = "powershell.exe" if IS_WINDOWS else "bash"
 SHELL_FLAG = "-Command" if IS_WINDOWS else "-c"
-ENCODING = "utf-8"
 
 
 # ============================================================================
-# 5. 环境探针
+# 6. 环境探针
 # ============================================================================
 def collect_env_info() -> str:
     """收集环境信息：系统、已安装工具、当前目录内容"""
@@ -135,7 +133,6 @@ def collect_env_info() -> str:
             output = r.stdout.strip()
             if not output:
                 continue
-            # 对目录列表做双重截断：最多100条、且总字符不超过2000
             if i == 2:
                 lines = output.splitlines()
                 total = len(lines)
@@ -159,7 +156,7 @@ ENV_INFO = collect_env_info()
 
 
 # ============================================================================
-# 6. Prompt 模板
+# 7. Prompt 模板
 # ============================================================================
 SYSTEM_PROMPT = f"""
 # 你是谁
@@ -212,7 +209,7 @@ CLI_REVIEW_PROMPT = f"""作为一个安全专家，对{OS_NAME}系统中的{SHEL
 
 
 # ============================================================================
-# 7. 工具 Schema 定义
+# 8. 工具 Schema
 # ============================================================================
 run_cli_schema = {
     "type": "function",
@@ -249,7 +246,7 @@ memory_hints_schema = {
 
 
 # ============================================================================
-# 8. 工具实现：命令执行
+# 9. 工具函数
 # ============================================================================
 def read_input(prompt: str = "") -> str:
     """读取用户输入"""
@@ -259,117 +256,13 @@ def read_input(prompt: str = "") -> str:
         return ""
 
 
-def review_command(command: str) -> bool:
-    """
-    安全审查：调用 LLM 判断命令是否可放行。
-    """
-    if _ctx.allow_all_cli:
-        return True
-    msg, _ = llm_chat(
-        [{"role": "user", "content": CLI_REVIEW_PROMPT.format(command=command)}],
-        temperature=0.0,
-        thinking=False,
-    )
-    if "放行" in msg["content"]:
-        return True
-    ans = read_input("Yes (默认) | No | 直接 Ctrl+C 打断：")
-    return "n" not in ans.lower()
-
-
-def execute_direct(command: str, timeout: int) -> str:
-    """直接执行命令（无沙箱回退）"""
-    result = subprocess.run(
-        [SHELL, SHELL_FLAG, command],
-        capture_output=True,
-        text=True,
-        errors="replace",
-        cwd=os.getcwd(),
-        timeout=timeout,
-        shell=False,
-    )
-    output = f"Exit code: {result.returncode}\n{result.stdout}"
-    if result.stderr:
-        output += f"\nSTDERR:\n{result.stderr}"
-    return output.strip() or "(no output)"
-
-
-def run_cli(command: str, timeout: int = 30) -> str:
-    """
-    执行 Shell 命令。
-    安全链路：LLM 审查 → 直接执行（TODO：未来替换为沙箱执行）
-    """
-    try:
-        if not review_command(command):
-            return "用户拒绝运行此命令"
-        return execute_direct(command, timeout)
-    except Exception as e:
-        return f"执行失败：{str(e)}"
-
-
-# ============================================================================
-# 9. 工具实现：记忆管理
-# ============================================================================
-def leave_memory_hints(hints: str, ctx: AgentContext = _ctx) -> str:
-    """
-    保存记忆线索到文件，并裁剪对话历史。
-    在记忆容量即将耗尽时调用（COMPACT_PANIC 模式），
-    将关键记忆写入 hints.md，并重置对话历史。
-    """
-    compact_i = -1
-    for i in range(len(ctx.messages) - 1, -1, -1):
-        if ctx.messages[i]["role"] == "user" and ctx.messages[i]["content"] == COMPACT_PROMPT:
-            compact_i = i
-            break
-
-    last_user_i = compact_i - 1
-    for i in range(last_user_i, -1, -1):
-        if ctx.messages[i]["role"] == "user":
-            last_user_i = i
-            break
-
-    ctx.messages = (
-        [
-            {
-                "role": "system",
-                "content": SYSTEM_PROMPT.format(hints=hints, env_info=ENV_INFO),
-            },
-            {
-                "role": "user",
-                "content": "《系统提示》！！！之前任务过程占用了太多token，记忆已耗尽，记忆压缩被触发。\n"
-                "不过别担心，记忆压缩时你已经调用leave_memory_hints保留下了关键内容、对应记忆线索（参照系统提示中的`# 记忆线索`区块）以及你最后的回答内容。\n"
-                "======== 最后的回答内容，开始 ========",
-            },
-        ]
-        + ctx.messages[last_user_i:compact_i]
-        + [
-            {
-                "role": "user",
-                "content": "======== 最后的回答内容，结束 ========\n"
-                "请开始确认你自己的任务状态，继续完成任务\n",
-            }
-        ]
-    )
-
-    ctx.compact_panic = "off"
-
-    with open(HINT_FILE, "w", encoding="utf-8") as f:
-        f.write(hints)
-    return "已留下记忆线索，并清空了对话记录。只保留了最后一次对话"
-
-
 def clean_input(text: str) -> str:
     """清理用户输入中的控制字符和非法字符"""
     if not isinstance(text, str):
         return str(text)
-
     text = re.sub(r"[\ud800-\udfff]", "", text)
     text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
-
     return text
-
-
-# 工具注册表
-tool_executors = {"run_cli": run_cli, "leave_memory_hints": leave_memory_hints}
 
 
 # ============================================================================
@@ -444,10 +337,9 @@ def llm_chat_stream(
     if resp.status_code != 200:
         raise Exception(f"LLM调用失败，HTTP {resp.status_code}: {resp.text[:500]}")
 
-    # 累积变量
     content_parts = []
     reasoning_parts = []
-    tool_calls_map = {}  # index -> {id, type, function: {name, arguments}}
+    tool_calls_map = {}
     usage = None
     role = "assistant"
     is_first_content = True
@@ -469,7 +361,6 @@ def llm_chat_stream(
             except json.JSONDecodeError:
                 continue
 
-            # 提取 usage（最后一个 chunk 带 usage）
             if "usage" in chunk and chunk["usage"]:
                 usage = chunk["usage"]
 
@@ -484,31 +375,28 @@ def llm_chat_stream(
             if "role" in delta:
                 role = delta["role"]
 
-            # ---- reasoning / thinking 内容 ----
             reasoning_content = (
                 delta.get("reasoning_content") or delta.get("reasoning") or ""
             )
             if reasoning_content:
                 if not is_thinking:
                     is_thinking = True
-                    sys.stdout.write("\033[2m💭 ")  # 暗色显示思考过程
+                    sys.stdout.write("\033[2m💭 ")
                 sys.stdout.write(reasoning_content)
                 sys.stdout.flush()
                 reasoning_parts.append(reasoning_content)
 
-            # ---- 正文内容 ----
             text = delta.get("content") or ""
             if text:
                 if is_thinking:
                     is_thinking = False
-                    sys.stdout.write("\033[0m\n")  # 结束暗色
+                    sys.stdout.write("\033[0m\n")
                 if is_first_content:
                     is_first_content = False
                 sys.stdout.write(text)
                 sys.stdout.flush()
                 content_parts.append(text)
 
-            # ---- tool_calls 增量 ----
             if "tool_calls" in delta:
                 for tc_delta in delta["tool_calls"]:
                     idx = tc_delta.get("index", 0)
@@ -527,16 +415,13 @@ def llm_chat_stream(
                     if func_delta.get("arguments"):
                         tc_entry["function"]["arguments"] += func_delta["arguments"]
 
-        # 正常结束时重置颜色（Ctrl+C 时 finally 也会执行此逻辑）
         if is_thinking:
             sys.stdout.write("\033[0m\n")
     finally:
-        # Ctrl+C 中断时也要重置颜色，避免终端保持暗色
         if is_thinking:
             sys.stdout.write("\033[0m\n")
             sys.stdout.flush()
 
-    # 组装最终 message（与非流式返回格式一致）
     full_content = "".join(content_parts)
     message = {"role": role, "content": full_content if full_content else None}
     if reasoning_parts:
@@ -546,7 +431,6 @@ def llm_chat_stream(
             tool_calls_map[i] for i in sorted(tool_calls_map.keys())
         ]
 
-    # fallback usage
     if usage is None:
         usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
@@ -554,218 +438,14 @@ def llm_chat_stream(
 
 
 # ============================================================================
-# 11. 初始化：工作空间
+# 11. 初始化
 # ============================================================================
 os.makedirs(WORKSPACE_DIR, exist_ok=True)
 
-# 注意：_ctx.messages 的构建现在由 Memory.build_initial_messages() 负责
-# 不再在此处初始化，main() 会处理
-
 
 # ============================================================================
-# 12. Session 管理
+# 12. setup_eva_script
 # ============================================================================
-def get_session_file() -> str:
-    """获取当前工作目录对应的 session 文件路径"""
-    current_dir = os.getcwd()
-    dir_hash = re.sub(r"[\\/:]", "_", current_dir)
-    session_dir = f"{WORKSPACE_DIR}/sessions"
-    os.makedirs(session_dir, exist_ok=True)
-    return f"{session_dir}/{dir_hash}.json"
-
-
-def save_session(messages: list[dict]) -> None:
-    """保存对话历史到 session 文件"""
-    session_file = get_session_file()
-    with open(session_file, "w", encoding="utf-8") as f:
-        json.dump(messages, f, ensure_ascii=False, indent=2)
-    print(f"\n> 会话已保存到：{session_file}")
-
-
-def load_session() -> list[dict] | None:
-    """从 session 文件加载对话历史"""
-    session_file = get_session_file()
-    if not os.path.exists(session_file):
-        return None
-    try:
-        with open(session_file, "r", encoding="utf-8") as f:
-            messages = json.load(f)
-
-        last_msg = messages[-1]
-        if last_msg["role"] == "assistant" and "tool_calls" in last_msg:
-            del last_msg["tool_calls"]
-            if not last_msg["content"]:
-                del messages[-1]
-        size_KB = (os.path.getsize(session_file) + 1000 - 1) // 1000
-        print(f"\n> 会话已从文件加载：{session_file} ({format(size_KB, ',')} KB)")
-        return messages
-    except json.JSONDecodeError:
-        print(f"> 会话文件损坏：{session_file}")
-        return None
-
-
-def list_sessions() -> None:
-    """列出所有 session 文件"""
-    session_file = get_session_file()
-    session_dir = f"{WORKSPACE_DIR}/sessions"
-    print(f"目录: {session_dir}\n")
-    if not os.path.exists(session_dir):
-        print("> 没有找到任何会话记录。")
-        return
-
-    files = [f for f in os.listdir(session_dir) if f.endswith(".json")]
-    if not files:
-        print("> 没有找到任何会话记录。")
-        return
-
-    print(f"> 共找到 {len(files)} 个会话:")
-    print("-" * 60)
-    for i, f in enumerate(sorted(files), start=1):
-        path = os.path.join(session_dir, f)
-        size = os.path.getsize(path)
-        size_KB = (size + 1000 - 1) // 1000
-        if path == session_file:
-            print(f"  {i}. {f} ({format(size_KB, ',')} KB)    <=== 当前目录")
-        else:
-            print(f"  {i}. {f} ({format(size_KB, ',')} KB)")
-    print("-" * 60)
-
-
-def clear_session() -> None:
-    """清除当前工作目录的 session 文件"""
-    session_file = get_session_file()
-    if os.path.exists(session_file):
-        try:
-            os.remove(session_file)
-            print(f"> 已清除会话：{session_file}")
-        except KeyboardInterrupt:
-            print("已取消")
-    else:
-        print(f"> 会话不存在：{session_file}")
-
-
-# ============================================================================
-# 13. Agent 循环
-# ============================================================================
-def agent_single_loop(ctx: AgentContext = _ctx) -> None:
-    """
-    Agent 单次循环。
-
-    流程：
-    1. 从 ctx.messages 获取上下文，调用 LLM 流式推理
-    2. 若 LLM 返回 tool_calls，执行对应工具
-    3. 若 token 超过阈值，触发 ctx.compact_panic 模式
-    4. 若无 tool_calls 或用户中断，返回主循环
-    """
-    break_loop = False
-    while not break_loop:
-        try:
-            sys.stdout.write("\n[*] EVA: ")
-            sys.stdout.flush()
-            if ctx.compact_panic == "on":
-                msg, usage = llm_chat_stream(
-                    ctx.messages, tools=[run_cli_schema, memory_hints_schema]
-                )
-            else:
-                msg, usage = llm_chat_stream(ctx.messages, tools=[run_cli_schema])
-            ctx.messages.append(msg)
-
-            # 流式输出已经实时打印了内容，这里只需换行
-            sys.stdout.write("\n\n")
-            sys.stdout.flush()
-
-            if not "tool_calls" in msg or not msg["tool_calls"]:
-                break
-
-            for tc in msg["tool_calls"]:
-                func = tc["function"]
-                name = func["name"]
-                try:
-                    args = json.loads(func["arguments"])
-
-                    print(f"===> 执行工具：{name}")
-                    for k, v in args.items():
-                        print(f"{k}: {v}")
-                    print("\n")
-
-                    result = tool_executors[name](**args)
-                except KeyboardInterrupt:
-                    print("\n\n工具调用已中断，退出 agent_single_loop，回到用户 turn")
-                    result = "用户中止该工具运行"
-                    break_loop = True
-                except Exception as e:
-                    result = f"工具执行异常：{str(e)}"
-
-                print("<=== 工具返回：")
-                if len(result) > 6000:
-                    lines = f"{result[:6000]}\n... 后面内容省略".splitlines()
-                else:
-                    lines = result.splitlines()
-                print("\n".join(lines[:30]))
-                if len(lines) > 30:
-                    print("\n... 后面内容省略")
-                print("\n\n")
-
-                if name == "leave_memory_hints":
-                    usage["total_tokens"] = 0
-                else:
-                    if len(result) > TOOL_RESULT_LEN:
-                        result = f"{result[:TOOL_RESULT_LEN]}\n...文本太长，后面内容已省略。请控制读取的行数"
-                    ctx.messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tc["id"],
-                            "name": name,
-                            "content": clean_input(result),
-                        }
-                    )
-
-                if (
-                    ctx.compact_panic == "off"
-                    and usage["total_tokens"] >= TOKEN_CAP * COMPACT_THRESH
-                ):
-                    print(f"！！！紧急回合，触发记忆压缩")
-                    ctx.compact_panic = "on"
-                    ctx.messages.append({"role": "user", "content": COMPACT_PROMPT})
-        except KeyboardInterrupt:
-            print("\n\nagent_single_loop 已中断，回到用户 turn")
-            break_loop = True
-            break
-
-        except Exception as e:
-            print(f"LLM 调用异常：{e}")
-            traceback.print_exc()
-            break
-
-
-# ============================================================================
-# 14. 主循环与人机交互
-# ============================================================================
-def human_loop(user_ask: str | None = None, ctx: AgentContext = _ctx) -> None:
-    """人与 Agent 的主对话循环"""
-    while True:
-        try:
-            if user_ask:
-                user_input = user_ask
-                print(f"[-] You: {user_input}\n")
-            else:
-                print("")
-                user_input = read_input("[-] You: ").strip()
-
-            ctx.messages.append({"role": "user", "content": clean_input(user_input)})
-            agent_single_loop(ctx)
-
-            if user_ask:
-                break
-        except KeyboardInterrupt:
-            save_session(ctx.messages)
-            print("\n已中断，会话已保存")
-            break
-        except Exception as e:
-            print(f"主循环异常：{e}")
-            break
-
-
 def setup_eva_script() -> bool:
     """创建全局启动脚本（~/.local/bin/eva）"""
     home = Path.home()
@@ -805,255 +485,132 @@ python3 {this_file} "$@"
 
 
 # ============================================================================
-# 15. 入口点
+# 13. Memory 类
 # ============================================================================
-def main() -> None:
-    from types import SimpleNamespace
-
-    if not IS_WINDOWS:
-        setup_eva_script()
-
-    # 解析命令行参数
-    parser = argparse.ArgumentParser(description="人类你好，我是EVA")
-    parser.add_argument(
-        "-a",
-        "--allow-all",
-        action="store_true",
-        help="允许所有命令无需用户确认即可执行",
-    )
-    parser.add_argument(
-        "-l", "--list-session", action="store_true", help="列出所有session"
-    )
-    parser.add_argument(
-        "-c", "--clear-session", action="store_true", help="清除当前目录session"
-    )
-    parser.add_argument(
-        "-u", "--user-ask", type=str, help="独立地针对一条用户提问执行EVA"
-    )
-    args = parser.parse_args()
-
-    # 构建 platform 和 config（SimpleNamespace 临时方案，Phase 2 完成后替换为 dataclass）
-    platform_ns = SimpleNamespace(
-        shell=SHELL,
-        shell_flag=SHELL_FLAG,
-        os_name=OS_NAME,
-        is_windows=IS_WINDOWS,
-        env_info=ENV_INFO,
-        hint_file=HINT_FILE,
-    )
-    config_ns = SimpleNamespace(
-        model_name=EVA_MODEL_NAME,
-        base_url=EVA_BASE_URL,
-        api_key=EVA_API_KEY,
-        token_cap=TOKEN_CAP,
-        compact_thresh=COMPACT_THRESH,
-        tool_result_len=TOOL_RESULT_LEN,
-    )
-
-    # 构建 Memory 实例
-    memory = Memory(
-        workspace_dir=WORKSPACE_DIR,
-        hint_file=HINT_FILE,
-        env_info=ENV_INFO,
-    )
-
-    # 处理会话管理命令
-    if args.list_session:
-        memory.list_sessions()
-        return
-    elif args.clear_session:
-        memory.clear_session()
-        return
-
-    # 构建上下文
-    ctx = AgentContext(allow_all_cli=args.allow_all)
-
-    # 打印启动信息
-    print("=" * 80)
-    logo = f"EVA ({EVA_MODEL_NAME}-{TOKEN_CAP // 1000}k)"
-    print(" " * ((78 - len(logo)) // 2), logo, "\n")
-    if ctx.allow_all_cli:
-        print("> 命令模式：允许所有命令无需确认！")
-    else:
-        print("> 命令模式：只允许读")
-    print("=" * 80)
-
-    # 启动 Agent
-    agent = Agent(config_ns, platform_ns, ctx, memory)
-    agent.run(args.user_ask)
-
-
-# ============================================================================
-# 16. Memory 类
-# ============================================================================
-
-# ============================================================================
-# 17. ToolRegistry 类
-# ============================================================================
-
-# ============================================================================
-# 18. Agent 类
-# ============================================================================
-class Agent:
-    """
-    核心 Agent：串联 LLMClient / ToolRegistry / Memory / AgentContext。
-    单一职责：管理 Agent ↔ User 的交互循环。
-    """
+class Memory:
+    """记忆管理：hints 线索 + session 持久化"""
 
     def __init__(
         self,
-        config: "AgentConfig",
-        platform: "Platform",
-        ctx: AgentContext,
-        memory: Memory,
+        workspace_dir: Path,
+        hint_file: Path,
+        env_info: str,
     ):
-        self.config = config
-        self.platform = platform
-        self.ctx = ctx
-        self.memory = memory
-        self.tools = ToolRegistry(config, platform, ctx)
-        self.tools.setup_builtin_tools()
+        self.workspace_dir = workspace_dir
+        self.hint_file = hint_file
+        self.env_info = env_info
+        self._hints: str | None = None
+        self._session_file: Path | None = None
 
-    def _read_input(self, prompt: str = "") -> str:
-        """读取用户输入"""
+    def load_hints(self) -> str:
+        """懒加载 hints 文件内容"""
+        if self._hints is None:
+            if self.hint_file.exists():
+                self._hints = self.hint_file.read_text(encoding="utf-8")
+            else:
+                self._hints = ""
+        return self._hints
+
+    def save_hints(self, hints: str) -> None:
+        """保存 hints"""
+        self.hint_file.write_text(hints, encoding="utf-8")
+        self._hints = hints
+
+    def build_initial_messages(self) -> list[dict]:
+        """
+        构建初始 messages（含当前 hints 的 system prompt）。
+        每次新会话或加载会话时调用，确保 hints 最新值生效。
+        """
+        hints = self.load_hints()
+        return [
+            {
+                "role": "system",
+                "content": SYSTEM_PROMPT.format(
+                    hints=hints if hints else "无",
+                    env_info=self.env_info,
+                ),
+            }
+        ]
+
+    def get_session_file(self) -> Path:
+        """获取当前工作目录对应的 session 文件"""
+        if self._session_file is None:
+            current_dir = Path.cwd()
+            dir_hash = re.sub(r"[\\/:]", "_", str(current_dir))
+            session_dir = self.workspace_dir / "sessions"
+            session_dir.mkdir(exist_ok=True)
+            self._session_file = session_dir / f"{dir_hash}.json"
+        return self._session_file
+
+    def save_session(self, messages: list[dict]) -> None:
+        """
+        保存对话历史（仅 conversation history）。
+        messages[0] 是 system message，不写入 session 文件。
+        """
+        history = messages[1:] if len(messages) > 1 else []
+        sf = self.get_session_file()
+        sf.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"\n> 会话已保存到：{sf}")
+
+    def load_session(self) -> list[dict] | None:
+        """
+        加载对话历史（仅 conversation history）。
+        返回的列表不含 system message，调用方需自行拼接到 build_initial_messages() 结果后。
+        """
+        sf = self.get_session_file()
+        if not sf.exists():
+            return None
         try:
-            return input(prompt)
-        except EOFError:
-            return ""
+            history = json.loads(sf.read_text(encoding="utf-8"))
+            if history and history[-1]["role"] == "assistant":
+                last_msg = history[-1]
+                if "tool_calls" in last_msg:
+                    del last_msg["tool_calls"]
+                    if not last_msg.get("content"):
+                        del history[-1]
+            size_KB = (sf.stat().st_size + 1000 - 1) // 1000
+            print(f"\n> 会话已从文件加载：{sf} ({size_KB:,} KB)")
+            return history
+        except json.JSONDecodeError:
+            print(f"> 会话文件损坏：{sf}")
+            return None
 
-    def _single_loop(self) -> None:
-        """
-        单次 Agent 循环。
-        流程：LLM推理 → 工具执行 → token超限检测
-        """
-        break_loop = False
-        while not break_loop:
+    def list_sessions(self) -> None:
+        """列出所有 session"""
+        sf = self.get_session_file()
+        session_dir = sf.parent
+        print(f"目录: {session_dir}\n")
+        if not session_dir.exists():
+            print("> 没有找到任何会话记录。")
+            return
+        files = [f for f in session_dir.iterdir() if f.suffix == ".json"]
+        if not files:
+            print("> 没有找到任何会话记录。")
+            return
+        print(f"> 共找到 {len(files)} 个会话:")
+        print("-" * 60)
+        for i, f in enumerate(sorted(files), start=1):
+            size_KB = (f.stat().st_size + 1000 - 1) // 1000
+            marker = "    <=== 当前目录" if f == sf else ""
+            print(f"  {i}. {f.name} ({size_KB:,} KB){marker}")
+        print("-" * 60)
+
+    def clear_session(self) -> None:
+        """清除当前 session"""
+        sf = self.get_session_file()
+        if sf.exists():
             try:
-                sys.stdout.write("\n[*] EVA: ")
-                sys.stdout.flush()
-
-                # 选择工具集（compact_panic 模式额外提供 leave_memory_hints）
-                schemas = self.tools.get_schemas()
-                if self.ctx.compact_panic != "on":
-                    schemas = [
-                        s for s in schemas
-                        if s["function"]["name"] != "leave_memory_hints"
-                    ]
-
-                msg, usage = llm_chat_stream(self.ctx.messages, tools=schemas)
-                self.ctx.messages.append(msg)
-
-                sys.stdout.write("\n\n")
-                sys.stdout.flush()
-
-                if not msg.get("tool_calls"):
-                    break
-
-                for tc in msg["tool_calls"]:
-                    name = tc["function"]["name"]
-                    try:
-                        args = json.loads(tc["function"]["arguments"])
-                        print(f"===> 执行工具：{name}")
-                        for k, v in args.items():
-                            print(f"{k}: {v}")
-                        print("\n")
-                        result = self.tools.execute(name, args)
-                    except KeyboardInterrupt:
-                        print("\n\n工具调用已中断，回到用户 turn")
-                        result = "用户中止该工具运行"
-                        break_loop = True
-                    except Exception as e:
-                        result = f"工具执行异常：{str(e)}"
-
-                    print("<=== 工具返回：")
-                    if len(result) > 6000:
-                        lines = f"{result[:6000]}\n... 后面内容省略".splitlines()
-                    else:
-                        lines = result.splitlines()
-                    print("\n".join(lines[:30]))
-                    if len(lines) > 30:
-                        print("\n... 后面内容省略")
-                    print("\n\n")
-
-                    # 工具结果追加到 messages（leave_memory_hints 特殊处理）
-                    if name == "leave_memory_hints":
-                        usage["total_tokens"] = 0
-                    else:
-                        if len(result) > self.config.tool_result_len:
-                            result = f"{result[:self.config.tool_result_len]}\n...文本太长，已省略"
-                        self.ctx.messages.append({
-                            "role": "tool",
-                            "tool_call_id": tc["id"],
-                            "name": name,
-                            "content": clean_input(result),
-                        })
-
-                    # token 超限检测
-                    if (self.ctx.compact_panic == "off"
-                            and usage["total_tokens"] >= self.config.token_cap * self.config.compact_thresh):
-                        print("！！！紧急回合，触发记忆压缩")
-                        self.ctx.compact_panic = "on"
-                        self.ctx.messages.append(
-                            {"role": "user", "content": COMPACT_PROMPT}
-                        )
-
+                sf.unlink()
+                print(f"> 已清除会话：{sf}")
             except KeyboardInterrupt:
-                print("\n\nagent_single_loop 已中断，回到用户 turn")
-                break_loop = True
-                break
-            except Exception as e:
-                print(f"LLM 调用异常：{e}")
-                traceback.print_exc()
-                break
-
-    def _human_loop(self, user_ask: str | None = None) -> None:
-        """人与 Agent 的主对话循环"""
-        while True:
-            try:
-                if user_ask:
-                    user_input = user_ask
-                    print(f"[-] You: {user_input}\n")
-                else:
-                    print("")
-                    user_input = self._read_input("[-] You: ").strip()
-
-                self.ctx.messages.append({
-                    "role": "user",
-                    "content": clean_input(user_input),
-                })
-                self._single_loop()
-
-                if user_ask:
-                    break
-            except KeyboardInterrupt:
-                self.memory.save_session(self.ctx.messages)
-                print("\n已中断，会话已保存")
-                break
-            except Exception as e:
-                print(f"主循环异常：{e}")
-                break
-
-    def run(self, user_ask: str | None = None) -> None:
-        """
-        对外统一入口：
-        1. 构建初始 messages（含 system prompt，hints 最新值）
-        2. 加载 session history 并追加（单次模式不加载）
-        3. 启动对话循环
-        """
-        # 1. 构建初始 messages
-        self.ctx.messages = self.memory.build_initial_messages()
-
-        # 2. 加载 session history 并追加
-        if not user_ask:
-            history = self.memory.load_session()
-            if history is not None:
-                self.ctx.messages.extend(history)
-
-        # 3. 启动对话循环
-        self._human_loop(user_ask)
+                print("已取消")
+        else:
+            print(f"> 会话不存在：{sf}")
 
 
-
+# ============================================================================
+# 14. ToolRegistry 类
+# ============================================================================
 class ToolRegistry:
     """
     工具注册中心：Schema 和 Handler 分离。
@@ -1071,8 +628,6 @@ class ToolRegistry:
         self.ctx = ctx
         self._schemas: dict[str, dict] = {}
         self._handlers: dict[str, callable] = {}
-
-    # ---- 内置工具实现 ----
 
     def _review_command(self, command: str) -> bool:
         """安全审查：LLM 判断命令是否可放行"""
@@ -1162,8 +717,6 @@ class ToolRegistry:
         self.platform.hint_file.write_text(hints, encoding="utf-8")
         return "已留下记忆线索，并清空了对话记录。只保留了最后一次对话"
 
-    # ---- 注册接口 ----
-
     def register(self, schema: dict, handler: callable) -> None:
         """注册工具 schema 和 handler"""
         name = schema["function"]["name"]
@@ -1213,132 +766,219 @@ class ToolRegistry:
         self.register(memory_hints_schema, self._leave_memory_hints)
 
 
-
-class Memory:
-    """记忆管理：hints 线索 + session 持久化"""
+# ============================================================================
+# 15. Agent 类
+# ============================================================================
+class Agent:
+    """
+    核心 Agent：串联 LLMClient / ToolRegistry / Memory / AgentContext。
+    单一职责：管理 Agent ↔ User 的交互循环。
+    """
 
     def __init__(
         self,
-        workspace_dir: Path,
-        hint_file: Path,
-        env_info: str,
+        config: "AgentConfig",
+        platform: "Platform",
+        ctx: AgentContext,
+        memory: Memory,
     ):
-        self.workspace_dir = workspace_dir
-        self.hint_file = hint_file
-        self.env_info = env_info
-        self._hints: str | None = None
-        self._session_file: Path | None = None
+        self.config = config
+        self.platform = platform
+        self.ctx = ctx
+        self.memory = memory
+        self.tools = ToolRegistry(config, platform, ctx)
+        self.tools.setup_builtin_tools()
 
-    # ---- hints ----
-
-    def load_hints(self) -> str:
-        """懒加载 hints 文件内容"""
-        if self._hints is None:
-            if self.hint_file.exists():
-                self._hints = self.hint_file.read_text(encoding="utf-8")
-            else:
-                self._hints = ""
-        return self._hints
-
-    def save_hints(self, hints: str) -> None:
-        """保存 hints"""
-        self.hint_file.write_text(hints, encoding="utf-8")
-        self._hints = hints
-
-    def build_initial_messages(self) -> list[dict]:
-        """
-        构建初始 messages（含当前 hints 的 system prompt）。
-        每次新会话或加载会话时调用，确保 hints 最新值生效。
-        """
-        hints = self.load_hints()
-        return [
-            {
-                "role": "system",
-                "content": SYSTEM_PROMPT.format(
-                    hints=hints if hints else "无",
-                    env_info=self.env_info,
-                ),
-            }
-        ]
-
-    # ---- session 文件路径 ----
-
-    def get_session_file(self) -> Path:
-        """获取当前工作目录对应的 session 文件"""
-        if self._session_file is None:
-            current_dir = Path.cwd()
-            dir_hash = re.sub(r"[\\/:]", "_", str(current_dir))
-            session_dir = self.workspace_dir / "sessions"
-            session_dir.mkdir(exist_ok=True)
-            self._session_file = session_dir / f"{dir_hash}.json"
-        return self._session_file
-
-    # ---- session 操作（仅 conversation history，不含 system message）----
-
-    def save_session(self, messages: list[dict]) -> None:
-        """
-        保存对话历史（仅 conversation history）。
-        messages[0] 是 system message，不写入 session 文件。
-        """
-        history = messages[1:] if len(messages) > 1 else []
-        sf = self.get_session_file()
-        sf.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"\n> 会话已保存到：{sf}")
-
-    def load_session(self) -> list[dict] | None:
-        """
-        加载对话历史（仅 conversation history）。
-        返回的列表不含 system message，调用方需自行拼接到 build_initial_messages() 结果后。
-        """
-        sf = self.get_session_file()
-        if not sf.exists():
-            return None
+    def _read_input(self, prompt: str = "") -> str:
+        """读取用户输入"""
         try:
-            history = json.loads(sf.read_text(encoding="utf-8"))
-            if history and history[-1]["role"] == "assistant":
-                last_msg = history[-1]
-                if "tool_calls" in last_msg:
-                    del last_msg["tool_calls"]
-                    if not last_msg.get("content"):
-                        del history[-1]
-            size_KB = (sf.stat().st_size + 1000 - 1) // 1000
-            print(f"\n> 会话已从文件加载：{sf} ({size_KB:,} KB)")
-            return history
-        except json.JSONDecodeError:
-            print(f"> 会话文件损坏：{sf}")
-            return None
+            return input(prompt)
+        except EOFError:
+            return ""
 
-    def list_sessions(self) -> None:
-        """列出所有 session"""
-        sf = self.get_session_file()
-        session_dir = sf.parent
-        print(f"目录: {session_dir}\n")
-        if not session_dir.exists():
-            print("> 没有找到任何会话记录。")
-            return
-        files = [f for f in session_dir.iterdir() if f.suffix == ".json"]
-        if not files:
-            print("> 没有找到任何会话记录。")
-            return
-        print(f"> 共找到 {len(files)} 个会话:")
-        print("-" * 60)
-        for i, f in enumerate(sorted(files), start=1):
-            size_KB = (f.stat().st_size + 1000 - 1) // 1000
-            marker = "    <=== 当前目录" if f == sf else ""
-            print(f"  {i}. {f.name} ({size_KB:,} KB){marker}")
-        print("-" * 60)
-
-    def clear_session(self) -> None:
-        """清除当前 session"""
-        sf = self.get_session_file()
-        if sf.exists():
+    def _single_loop(self) -> None:
+        """
+        单次 Agent 循环。
+        流程：LLM推理 → 工具执行 → token超限检测
+        """
+        break_loop = False
+        while not break_loop:
             try:
-                sf.unlink()
-                print(f"> 已清除会话：{sf}")
+                sys.stdout.write("\n[*] EVA: ")
+                sys.stdout.flush()
+
+                schemas = self.tools.get_schemas()
+                if self.ctx.compact_panic != "on":
+                    schemas = [
+                        s for s in schemas
+                        if s["function"]["name"] != "leave_memory_hints"
+                    ]
+
+                msg, usage = llm_chat_stream(self.ctx.messages, tools=schemas)
+                self.ctx.messages.append(msg)
+
+                sys.stdout.write("\n\n")
+                sys.stdout.flush()
+
+                if not msg.get("tool_calls"):
+                    break
+
+                for tc in msg["tool_calls"]:
+                    name = tc["function"]["name"]
+                    try:
+                        args = json.loads(tc["function"]["arguments"])
+                        print(f"===> 执行工具：{name}")
+                        for k, v in args.items():
+                            print(f"{k}: {v}")
+                        print("\n")
+                        result = self.tools.execute(name, args)
+                    except KeyboardInterrupt:
+                        print("\n\n工具调用已中断，回到用户 turn")
+                        result = "用户中止该工具运行"
+                        break_loop = True
+                    except Exception as e:
+                        result = f"工具执行异常：{str(e)}"
+
+                    print("<=== 工具返回：")
+                    if len(result) > 6000:
+                        lines = f"{result[:6000]}\n... 后面内容省略".splitlines()
+                    else:
+                        lines = result.splitlines()
+                    print("\n".join(lines[:30]))
+                    if len(lines) > 30:
+                        print("\n... 后面内容省略")
+                    print("\n\n")
+
+                    if name == "leave_memory_hints":
+                        usage["total_tokens"] = 0
+                    else:
+                        if len(result) > self.config.tool_result_len:
+                            result = f"{result[:self.config.tool_result_len]}\n...文本太长，已省略"
+                        self.ctx.messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "name": name,
+                            "content": clean_input(result),
+                        })
+
+                    if (self.ctx.compact_panic == "off"
+                            and usage["total_tokens"] >= self.config.token_cap * self.config.compact_thresh):
+                        print("！！！紧急回合，触发记忆压缩")
+                        self.ctx.compact_panic = "on"
+                        self.ctx.messages.append(
+                            {"role": "user", "content": COMPACT_PROMPT}
+                        )
+
             except KeyboardInterrupt:
-                print("已取消")
-        else:
-            print(f"> 会话不存在：{sf}")
+                print("\n\nagent_single_loop 已中断，回到用户 turn")
+                break_loop = True
+                break
+            except Exception as e:
+                print(f"LLM 调用异常：{e}")
+                traceback.print_exc()
+                break
+
+    def _human_loop(self, user_ask: str | None = None) -> None:
+        """人与 Agent 的主对话循环"""
+        while True:
+            try:
+                if user_ask:
+                    user_input = user_ask
+                    print(f"[-] You: {user_input}\n")
+                else:
+                    print("")
+                    user_input = self._read_input("[-] You: ").strip()
+
+                self.ctx.messages.append({
+                    "role": "user",
+                    "content": clean_input(user_input),
+                })
+                self._single_loop()
+
+                if user_ask:
+                    break
+            except KeyboardInterrupt:
+                self.memory.save_session(self.ctx.messages)
+                print("\n已中断，会话已保存")
+                break
+            except Exception as e:
+                print(f"主循环异常：{e}")
+                break
+
+    def run(self, user_ask: str | None = None) -> None:
+        """
+        对外统一入口：
+        1. 构建初始 messages（含 system prompt，hints 最新值）
+        2. 加载 session history 并追加（单次模式不加载）
+        3. 启动对话循环
+        """
+        self.ctx.messages = self.memory.build_initial_messages()
+        if not user_ask:
+            history = self.memory.load_session()
+            if history is not None:
+                self.ctx.messages.extend(history)
+        self._human_loop(user_ask)
+
+
+# ============================================================================
+# 16. main()
+# ============================================================================
+def main() -> None:
+    from types import SimpleNamespace
+
+    if not IS_WINDOWS:
+        setup_eva_script()
+
+    parser = argparse.ArgumentParser(description="人类你好，我是EVA")
+    parser.add_argument("-a", "--allow-all", action="store_true", help="允许所有命令无需用户确认即可执行")
+    parser.add_argument("-l", "--list-session", action="store_true", help="列出所有session")
+    parser.add_argument("-c", "--clear-session", action="store_true", help="清除当前目录session")
+    parser.add_argument("-u", "--user-ask", type=str, help="独立地针对一条用户提问执行EVA")
+    args = parser.parse_args()
+
+    platform_ns = SimpleNamespace(
+        shell=SHELL,
+        shell_flag=SHELL_FLAG,
+        os_name=OS_NAME,
+        is_windows=IS_WINDOWS,
+        env_info=ENV_INFO,
+        hint_file=HINT_FILE,
+    )
+    config_ns = SimpleNamespace(
+        model_name=EVA_MODEL_NAME,
+        base_url=EVA_BASE_URL,
+        api_key=EVA_API_KEY,
+        token_cap=TOKEN_CAP,
+        compact_thresh=COMPACT_THRESH,
+        tool_result_len=TOOL_RESULT_LEN,
+    )
+
+    memory = Memory(
+        workspace_dir=WORKSPACE_DIR,
+        hint_file=HINT_FILE,
+        env_info=ENV_INFO,
+    )
+
+    if args.list_session:
+        memory.list_sessions()
+        return
+    elif args.clear_session:
+        memory.clear_session()
+        return
+
+    ctx = AgentContext(allow_all_cli=args.allow_all)
+
+    print("=" * 80)
+    logo = f"EVA ({EVA_MODEL_NAME}-{TOKEN_CAP // 1000}k)"
+    print(" " * ((78 - len(logo)) // 2), logo, "\n")
+    if ctx.allow_all_cli:
+        print("> 命令模式：允许所有命令无需确认！")
+    else:
+        print("> 命令模式：只允许读")
+    print("=" * 80)
+
+    agent = Agent(config_ns, platform_ns, ctx, memory)
+    agent.run(args.user_ask)
 
 
 if __name__ == "__main__":
