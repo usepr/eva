@@ -85,8 +85,8 @@ def detect_model_len() -> int:
 TOKEN_CAP = detect_model_len()
 COMPACT_THRESH = 3 / 4
 TOOL_RESULT_LEN = int(TOKEN_CAP / 20)
-WORKSPACE_DIR = f"{this_dir}/.eva"
-HINT_FILE = f"{WORKSPACE_DIR}/hints.md"
+WORKSPACE_DIR: Path = this_dir / ".eva"
+HINT_FILE: Path = WORKSPACE_DIR / "hints.md"
 
 
 # ============================================================================
@@ -554,23 +554,12 @@ def llm_chat_stream(
 
 
 # ============================================================================
-# 11. 初始化：加载记忆线索
+# 11. 初始化：工作空间
 # ============================================================================
 os.makedirs(WORKSPACE_DIR, exist_ok=True)
 
-hints = ""
-if os.path.exists(HINT_FILE):
-    with open(HINT_FILE, "r", encoding="utf-8") as f:
-        hints = f.read()
-
-_ctx.messages = [
-    {
-        "role": "system",
-        "content": SYSTEM_PROMPT.format(
-            hints=hints if hints else "无", env_info=ENV_INFO
-        ),
-    }
-]
+# 注意：_ctx.messages 的构建现在由 Memory.build_initial_messages() 负责
+# 不再在此处初始化，main() 会处理
 
 
 # ============================================================================
@@ -819,6 +808,8 @@ python3 {this_file} "$@"
 # 15. 入口点
 # ============================================================================
 def main() -> None:
+    from types import SimpleNamespace
+
     if not IS_WINDOWS:
         setup_eva_script()
 
@@ -841,33 +832,55 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    _ctx.allow_all_cli = args.allow_all
+    # 构建 platform 和 config（SimpleNamespace 临时方案，Phase 2 完成后替换为 dataclass）
+    platform_ns = SimpleNamespace(
+        shell=SHELL,
+        shell_flag=SHELL_FLAG,
+        os_name=OS_NAME,
+        is_windows=IS_WINDOWS,
+        env_info=ENV_INFO,
+        hint_file=HINT_FILE,
+    )
+    config_ns = SimpleNamespace(
+        model_name=EVA_MODEL_NAME,
+        base_url=EVA_BASE_URL,
+        api_key=EVA_API_KEY,
+        token_cap=TOKEN_CAP,
+        compact_thresh=COMPACT_THRESH,
+        tool_result_len=TOOL_RESULT_LEN,
+    )
+
+    # 构建 Memory 实例
+    memory = Memory(
+        workspace_dir=WORKSPACE_DIR,
+        hint_file=HINT_FILE,
+        env_info=ENV_INFO,
+    )
 
     # 处理会话管理命令
     if args.list_session:
-        list_sessions()
+        memory.list_sessions()
         return
     elif args.clear_session:
-        clear_session()
+        memory.clear_session()
         return
 
-    # Slogan
+    # 构建上下文
+    ctx = AgentContext(allow_all_cli=args.allow_all)
+
+    # 打印启动信息
     print("=" * 80)
     logo = f"EVA ({EVA_MODEL_NAME}-{TOKEN_CAP // 1000}k)"
     print(" " * ((78 - len(logo)) // 2), logo, "\n")
-    if _ctx.allow_all_cli:
+    if ctx.allow_all_cli:
         print("> 命令模式：允许所有命令无需确认！")
     else:
         print("> 命令模式：只允许读")
     print("=" * 80)
 
-    # 自动加载 session（基于当前工作目录）
-    if not args.user_ask:
-        loaded_messages = load_session()
-        if loaded_messages is not None:
-            _ctx.messages = loaded_messages
-
-    human_loop(args.user_ask, _ctx)
+    # 启动 Agent
+    agent = Agent(config_ns, platform_ns, ctx, memory)
+    agent.run(args.user_ask)
 
 
 # ============================================================================
