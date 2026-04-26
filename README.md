@@ -31,12 +31,20 @@ export EVA_MODEL_NAME=xxxxx
 export EVA_API_KEY=sk-xxxxx
 ```
 
-Windows设置方法：
+Windows 命令行设置方法：
 
-```bash
+```cmd
 set EVA_BASE_URL=http://xxxxxxxxx/v1
 set EVA_MODEL_NAME=xxxxx
 set EVA_API_KEY=sk-xxxxx
+```
+
+Windows PowerShell设置方法：
+
+```powershell
+$env:EVA_BASE_URL=http://xxxxxxxxx/v1
+$env:EVA_MODEL_NAME=xxxxx
+$env:EVA_API_KEY=sk-xxxxx
 ```
 
 2. 运行`python3 eva.py`。首次运行会生成`eva`脚本，你需要执行下`source ~/.bashrc`让脚本生效。后续直接输入命令`eva`即可
