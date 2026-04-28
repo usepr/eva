@@ -292,7 +292,7 @@ class TestToolExecutionIndicator:
 
         mock_scroll = MagicMock()
         with patch.object(app, 'query_one', return_value=mock_scroll):
-            app._append_tool_result("command output")
+            app._append_tool_result("call_00_test", "command output")
 
         # 验证 remove 被调用
         mock_tool.remove.assert_called_once()
@@ -307,7 +307,7 @@ class TestToolExecutionIndicator:
 
         mock_scroll = MagicMock()
         with patch.object(app, 'query_one', return_value=mock_scroll):
-            app._append_tool_result("**formatted result**")
+            app._append_tool_result("call_00_test", "**formatted result**")
 
         # 应该 mount 一个新的 Static 显示结果
         assert mock_scroll.mount.called

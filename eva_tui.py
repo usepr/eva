@@ -239,8 +239,9 @@ class EVATUI(App):
                 args = msg.get("args", {})
                 self.call_from_thread(self._append_tool_start, name, args)
             elif event == "tool_result":
+                id = msg.get("id", "")
                 result = msg.get("result", "")
-                self.call_from_thread(self._append_tool_result, result)
+                self.call_from_thread(self._append_tool_result, id, result)
             elif event == "compact_panic":
                 self.call_from_thread(self._append_system, "⚠️ 记忆压缩触发")
 
@@ -296,7 +297,7 @@ class EVATUI(App):
         scroll.mount(self._tool_widget)
         scroll.scroll_end(animate=False)
 
-    def _append_tool_result(self, result: str) -> None:
+    def _append_tool_result(self, id: str, result: str) -> None:
         """显示工具执行结果（替换运行中指示）"""
         scroll = self.query_one("#conv_scroll", ScrollableContainer)
         # 移除运行中 widget
@@ -306,8 +307,9 @@ class EVATUI(App):
         # 渲染工具结果（支持 markdown）
         display = result[:500] + ("... 省略" if len(result) > 500 else "")
         content = self._render_md(display)
+        label = Text(f"🔧 工具结果 [{id[:12]}...]\n", style="bold #b8a9c9")
         scroll.mount(Static(
-            Text("🔧 结果\n", style="bold #b8a9c9") + content,
+            label + content,
             classes="msg-tool",
         ))
         scroll.scroll_end(animate=False)

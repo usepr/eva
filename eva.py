@@ -13,7 +13,7 @@ import sys
 import traceback
 import argparse
 import platform
-from typing import Callable
+from typing import Callable, TypedDict
 
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1126,6 +1126,41 @@ def main() -> None:
 
     agent = Agent(config_ns, platform_ns, ctx, memory)
     agent.run(args.user_ask)
+
+
+# =============================================================================
+# 协议模型（Backend ↔ Frontend JSON over stdin/stdout）
+# =============================================================================
+# 状态机（后端）:
+#   IDLE ──user_message──► THINKING ──► COMPLETED ──► IDLE
+#                               │
+#                               └─waiting_for_tool──► EXECUTING ──► THINKING
+#                                                                └─compact_panic ──► IDLE
+#
+# 状态机（前端）:
+#   IDLE ─ready──► READY ──user_input──► THINKING ──tool_start──► TOOL_RUNNING
+#       ──tool_result──► CONTENT_READY ──response──► READY
+#       ──compact_panic──► READY
+#
+# 协议字段校验表（供测试使用）
+PROTOCOL_REQUIRED_FIELDS = {
+    # Backend -> Frontend
+    "event:thinking": ["type", "event", "data"],
+    "event:content": ["type", "event", "data"],
+    "event:tool_start": ["type", "event", "id", "name", "args"],
+    "event:tool_result": ["type", "event", "id", "result"],
+    "event:compact_panic": ["type", "event"],
+    "message:tool_call": ["type", "id", "name", "args"],
+    "message:response": ["type", "status", "content"],
+    "message:ready": ["type"],
+    "message:session_saved": ["type"],
+    "message:pong": ["type"],
+    # Frontend -> Backend
+    "message:init": ["type"],
+    "message:user_message": ["type", "content"],
+    "message:save_session": ["type"],
+    "message:ping": ["type"],
+}
 
 
 def run_tui_server(ctx: AgentContext, memory: Memory, config_ns, platform_ns, debug: bool = False) -> None:
