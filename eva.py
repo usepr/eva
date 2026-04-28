@@ -248,13 +248,12 @@ def leave_memory_hints(hints):
             last_user_i = i
             break
 
-    # 对保留片段中的 tool result 做截断、删除 reasoning_content，避免压缩后体积依然过大
+    # 对保留片段中的 tool result 做截断，避免压缩后体积依然过大
+    # 注意：reasoning_content 必须原样保留，deepseek 要求回传
     kept = []
     for m in messages[last_user_i:compact_i]:
         if m['role'] == 'tool' and m.get('content') and len(m['content']) > 200:
             m = {**m, 'content': m['content'][:200] + '…（内容过长已压缩）'}
-        elif m['role'] == 'assistant' and 'reasoning_content' in m:
-            m = {k: v for k, v in m.items() if k != 'reasoning_content'}
         kept.append(m)
 
     messages = [
@@ -431,6 +430,8 @@ def llm_chat_stream(messages, tools=None, temperature=0.6, thinking=True):
     }
     if reasoning_parts:
         message['reasoning_content'] = ''.join(reasoning_parts)
+    else:
+        message['reasoning_content'] = ""  # deepseek 要求即使没有 thinking 也必须传空字符串
     if tool_calls_map:
         message['tool_calls'] = [tool_calls_map[i] for i in sorted(tool_calls_map.keys())]
 
