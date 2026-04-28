@@ -44,48 +44,11 @@ EVA_MODEL_NAME = os.environ.get("EVA_MODEL_NAME", "deepseek-v4-pro")
 EVA_API_KEY = os.environ.get("EVA_API_KEY", "sk-这里填你的deepseek API key")
 
 
-def detect_model_len() -> int:
-    """探测模型上下文长度"""
-    import requests
-
-    url = f"{EVA_BASE_URL}/models"
-    headers = {"Authorization": f"Bearer {EVA_API_KEY}"}
-    try:
-        resp = requests.get(url, headers=headers, timeout=10)
-    except UnicodeEncodeError:
-        print(
-            f"错误：EVA_API_KEY ({EVA_API_KEY}) 包含非法字符，请检查 EVA_API_KEY 配置。"
-        )
-        sys.exit(1)
-    except Exception as e:
-        print(f"错误：无法连接到 {EVA_BASE_URL}，请检查 EVA_BASE_URL 配置。\n详情：{e}")
-        sys.exit(1)
-
-    if resp.status_code == 401:
-        print("错误：API Key 无效或未授权，请检查 EVA_API_KEY 配置。")
-        sys.exit(1)
-    if resp.status_code != 200:
-        print(f"错误：获取模型列表失败（HTTP {resp.status_code}）：{resp.text[:200]}")
-        sys.exit(1)
-
-    out = resp.json()
-    for d in out["data"]:
-        if d["id"] == EVA_MODEL_NAME:
-            if "max_model_len" in d:
-                return d["max_model_len"]
-            else:
-                return 256_000
-    print(
-        f"错误：在 {EVA_BASE_URL} 上未找到模型 '{EVA_MODEL_NAME}'，请检查 EVA_MODEL_NAME 配置。"
-    )
-    print(f"可用模型：{[d['id'] for d in out.get('data', [])]}")
-    sys.exit(1)
-
-
 # ============================================================================
 # 4. EVA 内部配置
 # ============================================================================
-TOKEN_CAP = detect_model_len()
+# 默认 TOKEN_CAP，真实值通过 detect_token_cap() 探测（见 main）
+TOKEN_CAP = 256_000
 COMPACT_THRESH = 3 / 4
 TOOL_RESULT_LEN = int(TOKEN_CAP / 20)
 WORKSPACE_DIR: Path = this_dir / ".eva"
@@ -156,7 +119,47 @@ def collect_env_info() -> str:
     return "\n\n".join(results) if results else "环境信息获取失败"
 
 
-ENV_INFO = collect_env_info()
+class ConfigError(Exception):
+    """配置错误（网络探测失败、API Key 无效等）"""
+
+
+def detect_token_cap() -> int:
+    """探测模型上下文长度，失败抛出 ConfigError"""
+    import requests
+
+    url = f"{EVA_BASE_URL}/models"
+    headers = {"Authorization": f"Bearer {EVA_API_KEY}"}
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+    except UnicodeEncodeError as e:
+        raise ConfigError(f"EVA_API_KEY 包含非法字符：{EVA_API_KEY}") from e
+    except Exception as e:
+        raise ConfigError(f"无法连接到 {EVA_BASE_URL}：{e}") from e
+
+    if resp.status_code == 401:
+        raise ConfigError("API Key 无效或未授权")
+    if resp.status_code != 200:
+        raise ConfigError(f"获取模型列表失败（HTTP {resp.status_code}）：{resp.text[:200]}")
+
+    out = resp.json()
+    for d in out["data"]:
+        if d["id"] == EVA_MODEL_NAME:
+            return d.get("max_model_len", 256_000)
+    raise ConfigError(
+        f"在 {EVA_BASE_URL} 上未找到模型 '{EVA_MODEL_NAME}'。"
+        f"可用模型：{[d['id'] for d in out.get('data', [])]}"
+    )
+
+
+_env_info_cache: str | None = None
+
+
+def get_env_info() -> str:
+    """延迟收集环境信息，首次调用时执行 shell 命令，结果缓存"""
+    global _env_info_cache
+    if _env_info_cache is None:
+        _env_info_cache = collect_env_info()
+    return _env_info_cache
 
 
 # ============================================================================
@@ -1063,43 +1066,54 @@ def main() -> None:
     parser.add_argument("-u", "--user-ask", type=str, help="独立地针对一条用户提问执行EVA")
     parser.add_argument("--tui", action="store_true", help="Run as TUI backend server")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument("--offline", action="store_true", help="跳过模型探测，使用默认上下文长度")
     args = parser.parse_args()
+    global TOKEN_CAP, TOOL_RESULT_LEN
+    ctx = AgentContext(allow_all_cli=args.allow_all)
 
-    platform_ns = SimpleNamespace(
-        shell=SHELL,
-        shell_flag=SHELL_FLAG,
-        os_name=OS_NAME,
-        is_windows=IS_WINDOWS,
-        env_info=ENV_INFO,
-        hint_file=HINT_FILE,
-    )
-    config_ns = SimpleNamespace(
-        model_name=EVA_MODEL_NAME,
-        base_url=EVA_BASE_URL,
-        api_key=EVA_API_KEY,
-        token_cap=TOKEN_CAP,
-        compact_thresh=COMPACT_THRESH,
-        tool_result_len=TOOL_RESULT_LEN,
-    )
-
-    memory = Memory(
-        workspace_dir=WORKSPACE_DIR,
-        hint_file=HINT_FILE,
-        env_info=ENV_INFO,
-    )
-
+    # list_session / clear_session / tui 模式不需要 token_cap 探测
     if args.list_session:
+        memory = Memory(workspace_dir=WORKSPACE_DIR, hint_file=HINT_FILE, env_info=get_env_info())
         memory.list_sessions()
         return
     elif args.clear_session:
+        memory = Memory(workspace_dir=WORKSPACE_DIR, hint_file=HINT_FILE, env_info=get_env_info())
         memory.clear_session()
         return
-
-    ctx = AgentContext(allow_all_cli=args.allow_all)
-
-    if args.tui:
+    elif args.tui:
+        platform_ns = SimpleNamespace(
+            shell=SHELL, shell_flag=SHELL_FLAG, os_name=OS_NAME,
+            is_windows=IS_WINDOWS, env_info=get_env_info(), hint_file=HINT_FILE,
+        )
+        config_ns = SimpleNamespace(
+            model_name=EVA_MODEL_NAME, base_url=EVA_BASE_URL, api_key=EVA_API_KEY,
+            token_cap=TOKEN_CAP, compact_thresh=COMPACT_THRESH, tool_result_len=TOOL_RESULT_LEN,
+        )
+        memory = Memory(workspace_dir=WORKSPACE_DIR, hint_file=HINT_FILE, env_info=get_env_info())
         run_tui_server(ctx, memory, config_ns, platform_ns, debug=args.debug)
         return
+
+    # token_cap 探测（仅普通模式需要）
+    if args.offline or os.environ.get("EVA_OFFLINE") == "1":
+        print("[offline] 跳过模型探测，使用默认 TOKEN_CAP=256000")
+    else:
+        try:
+            TOKEN_CAP = detect_token_cap()
+            TOOL_RESULT_LEN = int(TOKEN_CAP / 20)
+        except ConfigError as e:
+            print(f"错误：{e}")
+            print("提示：使用 --offline 或设置 EVA_OFFLINE=1 可跳过探测")
+            return
+
+    platform_ns = SimpleNamespace(
+        shell=SHELL, shell_flag=SHELL_FLAG, os_name=OS_NAME,
+        is_windows=IS_WINDOWS, env_info=get_env_info(), hint_file=HINT_FILE,
+    )
+    config_ns = SimpleNamespace(
+        model_name=EVA_MODEL_NAME, base_url=EVA_BASE_URL, api_key=EVA_API_KEY,
+        token_cap=TOKEN_CAP, compact_thresh=COMPACT_THRESH, tool_result_len=TOOL_RESULT_LEN,
+    )
+    memory = Memory(workspace_dir=WORKSPACE_DIR, hint_file=HINT_FILE, env_info=get_env_info())
 
     print("=" * 80)
     logo = f"EVA ({EVA_MODEL_NAME}-{TOKEN_CAP // 1000}k)"
