@@ -1121,6 +1121,7 @@ def run_tui_server(ctx: AgentContext, memory: Memory, config_ns, platform_ns, de
 
     # Debug 日志配置
     _debug_log: list[str] = []
+    WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
     _debug_file = WORKSPACE_DIR / "debug.log"
 
     def _safe_print(msg: dict):
@@ -1172,7 +1173,7 @@ def run_tui_server(ctx: AgentContext, memory: Memory, config_ns, platform_ns, de
         tool_results = []
         for tc in agent._pending_tool_calls:
             name = tc["name"]
-            out_start = {"type": "event", "event": "tool_start", "id": tc["id"], "name": name}
+            out_start = {"type": "event", "event": "tool_start", "id": tc["id"], "name": name, "args": tc["args"]}
             _safe_print(out_start)
             _log("DEBUG", "OUT event", out_start)
             try:

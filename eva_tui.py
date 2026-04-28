@@ -46,6 +46,7 @@ class EvaBackend:
     def __init__(self, debug: bool = False):
         self._debug = debug
         self._debug_log: list[str] = []
+        Path(".eva").mkdir(exist_ok=True)
         self._debug_file = Path(".eva") / "debug.log"
 
         args = [sys.executable, "eva.py", "--tui"]
