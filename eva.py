@@ -1184,10 +1184,15 @@ def run_tui_server(ctx: AgentContext, memory: Memory, config_ns, platform_ns, de
             out_res = {"type": "event", "event": "tool_result", "id": tc["id"], "result": res[:200]}
             _safe_print(out_res)
             _log("DEBUG", "OUT event", out_res)
-            tool_results.append({"role": "tool", "tool_call_id": tc["id"], "name": name, "content": res})
+            tool_results.append({
+                "role": "tool",
+                "tool_call_id": tc["id"],
+                "name": name,
+                "content": res,
+            })
         agent.ctx.messages.extend(tool_results)
         agent._pending_tool_calls.clear()
-        resume_result = agent.resume([tr["content"] for tr in tool_results])
+        resume_result = agent.resume([])
         emit_response(resume_result)
         if resume_result.status == "waiting_for_tool":
             execute_tools_and_resume()
