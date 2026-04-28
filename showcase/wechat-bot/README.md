@@ -1,4 +1,6 @@
-# 微信-EVA
+# EVA-在微信使用
+
+作为你的个人助理，帮你维护东西、检索信息等。你可以自由修改bot.py，加入类似openclaw的heartbeat机制
 
 ## 快速开始
 
@@ -9,7 +11,7 @@
 
 ## 关于wechatbot
 
-微信官方通过 iLink 协议来对接ClawBot，也可以对接其他自定义机器人。
+微信官方通过 iLink 协议来对接ClawBot，也可以对接其他自定义机器人。不过iLink有比较多限制，比如只能作为个人Bot，无法加入群聊等。
 
 wechatbot是一个已封装好 iLink 协议的python库，说明文档：https://www.wechatbot.dev/en/python
 
