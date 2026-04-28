@@ -573,7 +573,6 @@ class Memory:
         history = messages[1:] if len(messages) > 1 else []
         sf = self.get_session_file()
         sf.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"\n> 会话已保存到：{sf}")
 
     def load_session(self) -> list[dict] | None:
         """
@@ -839,6 +838,9 @@ class Agent:
         self.on_tool_call: Callable[[str, dict], str] | None = None
         self.on_compact_panic: Callable[[], None] | None = None
 
+        # TUI 模式：待执行的工具调用列表
+        self._pending_tool_calls: list[dict] = []
+
         # 默认 stdout 回调（向后兼容 CLI 模式）
         if use_default_callbacks:
             self._setup_default_callbacks()
@@ -910,6 +912,7 @@ class Agent:
 
         # 检查状态
         if tool_calls:
+            self._pending_tool_calls = tool_calls
             return AgentResult(
                 status="waiting_for_tool",
                 content=content,
@@ -1058,6 +1061,8 @@ def main() -> None:
     parser.add_argument("-l", "--list-session", action="store_true", help="列出所有session")
     parser.add_argument("-c", "--clear-session", action="store_true", help="清除当前目录session")
     parser.add_argument("-u", "--user-ask", type=str, help="独立地针对一条用户提问执行EVA")
+    parser.add_argument("--tui", action="store_true", help="Run as TUI backend server")
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     args = parser.parse_args()
 
     platform_ns = SimpleNamespace(
@@ -1092,6 +1097,10 @@ def main() -> None:
 
     ctx = AgentContext(allow_all_cli=args.allow_all)
 
+    if args.tui:
+        run_tui_server(ctx, memory, config_ns, platform_ns, debug=args.debug)
+        return
+
     print("=" * 80)
     logo = f"EVA ({EVA_MODEL_NAME}-{TOKEN_CAP // 1000}k)"
     print(" " * ((78 - len(logo)) // 2), logo, "\n")
@@ -1103,6 +1112,112 @@ def main() -> None:
 
     agent = Agent(config_ns, platform_ns, ctx, memory)
     agent.run(args.user_ask)
+
+
+def run_tui_server(ctx: AgentContext, memory: Memory, config_ns, platform_ns, debug: bool = False) -> None:
+    """TUI 后端服务器：处理 stdin JSON 消息"""
+    import logging
+    import datetime as dt
+
+    # Debug 日志配置
+    _debug_log: list[str] = []
+    _debug_file = WORKSPACE_DIR / "debug.log"
+
+    def _log(level: str, direction: str, msg: dict):
+        if debug:
+            ts = dt.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            line = f"[{ts}] {level} {direction} {json.dumps(msg, ensure_ascii=False)[:200]}"
+            _debug_log.append(line)
+            _debug_file.write_text("\n".join(_debug_log) + "\n", encoding="utf-8")
+
+    agent = Agent(config_ns, platform_ns, ctx, memory, use_default_callbacks=False)
+
+    # 事件回调 → JSON 发送到 stdout
+    def on_thinking(text: str):
+        print(json.dumps({"type": "event", "event": "thinking", "data": text}), flush=True)
+        _log("DEBUG", "OUT event", {"event": "thinking", "data": text[:50]})
+
+    def on_content(text: str):
+        print(json.dumps({"type": "event", "event": "content", "data": text}), flush=True)
+        _log("DEBUG", "OUT event", {"event": "content", "data": text[:50]})
+
+    def on_compact_panic():
+        print(json.dumps({"type": "event", "event": "compact_panic"}), flush=True)
+        _log("DEBUG", "OUT event", {"event": "compact_panic"})
+
+    agent.on_thinking = on_thinking
+    agent.on_content = on_content
+    agent.on_compact_panic = on_compact_panic
+
+    def emit_response(result: AgentResult):
+        if result.status == "waiting_for_tool":
+            for tc in result.tool_calls:
+                out = {"type": "tool_call", "id": tc["id"], "name": tc["name"], "args": tc["args"]}
+                print(json.dumps(out), flush=True)
+                _log("DEBUG", "OUT", out)
+        else:
+            out = {"type": "response", "status": result.status, "content": (result.content or "")[:80], "reasoning": (result.reasoning or "")[:80]}
+            print(json.dumps(out), flush=True)
+            _log("DEBUG", "OUT", out)
+
+    def execute_tools_and_resume():
+        """执行工具并继续推理循环"""
+        tool_results = []
+        for tc in agent._pending_tool_calls:
+            name = tc["name"]
+            out_start = {"type": "event", "event": "tool_start", "id": tc["id"], "name": name}
+            print(json.dumps(out_start), flush=True)
+            _log("DEBUG", "OUT event", out_start)
+            try:
+                res = agent.tools.execute(name, tc["args"])
+                _log("INFO", "TOOL", {"name": name, "args": tc["args"], "result_len": len(res)})
+            except Exception as e:
+                res = f"工具执行异常：{str(e)}"
+                _log("ERROR", "TOOL", {"name": name, "error": str(e)})
+            out_res = {"type": "event", "event": "tool_result", "id": tc["id"], "result": res[:200]}
+            print(json.dumps(out_res), flush=True)
+            _log("DEBUG", "OUT event", out_res)
+            tool_results.append({"role": "tool", "tool_call_id": tc["id"], "name": name, "content": res})
+        agent.ctx.messages.extend(tool_results)
+        agent._pending_tool_calls.clear()
+        resume_result = agent.resume([tr["content"] for tr in tool_results])
+        emit_response(resume_result)
+        if resume_result.status == "waiting_for_tool":
+            execute_tools_and_resume()
+
+    for line in sys.stdin:
+        msg = json.loads(line.strip())
+        t = msg.get("type")
+        _log("DEBUG", "IN", msg)
+
+        if t == "init":
+            history = msg.get("session_history", [])
+            if history:
+                agent.ctx.messages.extend(history)
+                _log("INFO", "INIT", {"history_len": len(history)})
+            print(json.dumps({"type": "ready"}), flush=True)
+            _log("DEBUG", "OUT", {"type": "ready"})
+
+        elif t == "user_message":
+            agent.ctx.messages.append({"role": "user", "content": msg["content"]})
+            _log("INFO", "USER", {"content": msg["content"][:100]})
+            result = agent.step()
+            emit_response(result)
+            if result.status == "waiting_for_tool":
+                execute_tools_and_resume()
+
+        elif t == "save_session":
+            agent.memory.save_session(agent.ctx.messages)
+            _log("INFO", "SAVE", {"messages": len(agent.ctx.messages)})
+            print(json.dumps({"type": "session_saved"}), flush=True)
+            _log("DEBUG", "OUT", {"type": "session_saved"})
+
+        elif t == "ping":
+            print(json.dumps({"type": "pong"}), flush=True)
+            _log("DEBUG", "OUT", {"type": "pong"})
+
+        else:
+            _log("WARN", "UNKNOWN", {"type": t})
 
 
 if __name__ == "__main__":

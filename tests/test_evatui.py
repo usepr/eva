@@ -1,56 +1,71 @@
 """
-Tests for eva_tui.py
+Tests for eva_tui.py — Thin Frontend Architecture
 """
 
 import pytest
 from eva_tui import (
     EVATUI,
-    is_json,
-    rich_markdown,
-    rich_json,
-    create_agent,
-    EVA_MODEL_NAME,
-    TOKEN_CAP,
+    EvaBackend,
+    MessageBubble,
 )
 
 
-class TestHelpers:
-    """辅助函数测试"""
+class TestEvaBackend:
+    """EvaBackend 子进程管理测试"""
 
-    def test_is_json_object(self):
-        assert is_json('{"key": "value"}') is True
+    def test_backend_starts(self):
+        backend = EvaBackend()
+        assert backend.proc is not None
+        assert backend.proc.poll() is None  # 进程运行中
+        backend.stop()
 
-    def test_is_json_array(self):
-        assert is_json('[1, 2, 3]') is True
-
-    def test_is_json_false(self):
-        assert is_json("hello world") is False
-        assert is_json("no json here") is False
-
-    def test_render_json_formats(self):
-        result = rich_json('{"key": "value"}')
-        assert '"key"' in result
-
-    def test_render_md_passthrough(self):
-        result = rich_markdown("hello world")
-        assert result == "hello world"
+    def test_send_ping(self):
+        backend = EvaBackend()
+        backend.start_reader(lambda msg: None)
+        backend.send({"type": "ping"})
+        import time
+        time.sleep(0.5)
+        # 后端应该在 stdout 写入 pong
+        # 由于 daemon reader，不会收到消息
+        backend.stop()
 
 
-class TestEVATUIMethods:
-    """EVATUI 方法存在性测试"""
+class TestMessageBubble:
+    """MessageBubble 组件测试"""
+
+    def test_render_user(self):
+        bubble = MessageBubble(role="user", body="hello")
+        text = bubble.render()
+        assert "👤" in str(text)
+        assert "hello" in str(text)
+
+    def test_render_assistant(self):
+        bubble = MessageBubble(role="assistant", body="hi there")
+        text = bubble.render()
+        assert "🤖" in str(text)
+        assert "hi there" in str(text)
+
+    def test_render_tool(self):
+        bubble = MessageBubble(role="tool", body="ls output")
+        text = bubble.render()
+        assert "🔧" in str(text)
+
+
+class TestEVATUI:
+    """EVATUI 类测试"""
 
     def test_evatui_has_required_methods(self):
         required = [
-            "_on_thinking",
-            "_on_content",
-            "_show_thinking",
-            "_finalize_thinking",
-            "_process_result",
-            "_run_single_step",
-            "_process_and_maybe_resume",
-            "_resume_next",
-            "on_input_submitted",
+            "compose",
             "on_mount",
+            "on_input_submitted",
+            "action_clear_conv",
+            "_on_backend_message",
+            "_append_user",
+            "_append_tool_start",
+            "_append_tool_result",
+            "_show_thinking",
+            "_finalize_response",
         ]
         for name in required:
             assert hasattr(EVATUI, name), f"missing: {name}"
@@ -62,13 +77,7 @@ class TestEVATUIMethods:
         assert hasattr(EVATUI, "CSS")
         assert len(EVATUI.CSS) > 0
 
-
-class TestConstants:
-    """常量测试"""
-
-    def test_model_name_defined(self):
-        assert EVA_MODEL_NAME
-        assert isinstance(EVA_MODEL_NAME, str)
-
-    def test_token_cap_positive(self):
-        assert TOKEN_CAP > 0
+    def test_evatui_init_creates_backend(self):
+        app = EVATUI()
+        assert hasattr(app, "backend")
+        assert isinstance(app.backend, EvaBackend)

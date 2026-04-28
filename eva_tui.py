@@ -1,15 +1,17 @@
 """
-EVA TUI — 终端图形化界面
-使用 Textual + Rich 库，支持 Markdown / JSON 渲染显示。
+EVA TUI — 终端图形化界面（薄前端）
+通过子进程启动 eva.py --tui 作为后端，通过 JSON 消息通信。
 """
 
 from __future__ import annotations
 
-import sys
-import os
 import re
-import json as json_module
+import subprocess
+import json
+import sys
+import datetime as dt
 from pathlib import Path
+from threading import Thread
 from typing import Callable
 
 from textual.app import App, ComposeResult
@@ -17,109 +19,72 @@ from textual.binding import Binding
 from textual.containers import ScrollableContainer
 from textual.widgets import Input, Static, Markdown as TuiMarkdown
 from textual import widgets
-from rich.console import Console
-from rich.markdown import Markdown as RichMarkdown
-from rich.json import JSON
 from rich.text import Text
-from rich.table import Table
-from rich.panel import Panel
-
-from eva import Agent, AgentContext, Memory, AgentResult
-from types import SimpleNamespace
+from rich.markdown import Markdown as RichMarkdown
+from io import StringIO
+from rich.console import Console
 
 # ============================================================================
-# EVA 初始化
+# 工具函数
 # ============================================================================
 
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
-
-IS_WINDOWS = sys.platform == "win32"
-OS_NAME = "Windows" if IS_WINDOWS else "Linux"
-SHELL = "powershell.exe" if IS_WINDOWS else "bash"
-SHELL_FLAG = "-Command" if IS_WINDOWS else "-c"
-this_dir = Path(__file__).parent
-WORKSPACE_DIR = this_dir / ".eva"
-HINT_FILE = WORKSPACE_DIR / "hints.md"
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 
 
-def collect_env_info() -> str:
-    try:
-        hostname = os.uname().nodename if hasattr(os, "uname") else os.environ.get("COMPUTERNAME", "unknown")
-        os_version = os.uname().release if hasattr(os, "uname") else "unknown"
-        cwd = os.getcwd()
-        py_version = sys.version.split()[0]
-        user = os.environ.get("USER") or os.environ.get("USERNAME", "unknown")
-        return f"hostname: {hostname}, os: {os_version}, cwd: {cwd}, py: {py_version}, user: {user}"
-    except Exception:
-        return "environment info unavailable"
-
-
-def detect_model_len() -> int:
-    return 256_000
-
-
-EVA_BASE_URL = os.environ.get("EVA_BASE_URL", "https://api.deepseek.com/v1")
-EVA_MODEL_NAME = os.environ.get("EVA_MODEL_NAME", "deepseek-v4-flash")
-EVA_API_KEY = os.environ.get("EVA_API_KEY", "")
-TOKEN_CAP = detect_model_len()
-COMPACT_THRESH = 3 / 4
-TOOL_RESULT_LEN = int(TOKEN_CAP / 20)
-ENV_INFO = collect_env_info()
-
-
-def create_agent() -> Agent:
-    platform_ns = SimpleNamespace(
-        shell=SHELL,
-        shell_flag=SHELL_FLAG,
-        os_name=OS_NAME,
-        is_windows=IS_WINDOWS,
-        env_info=ENV_INFO,
-        hint_file=HINT_FILE,
-    )
-    config_ns = SimpleNamespace(
-        model_name=EVA_MODEL_NAME,
-        base_url=EVA_BASE_URL,
-        api_key=EVA_API_KEY,
-        token_cap=TOKEN_CAP,
-        compact_thresh=COMPACT_THRESH,
-        tool_result_len=TOOL_RESULT_LEN,
-    )
-    memory = Memory(
-        workspace_dir=WORKSPACE_DIR,
-        hint_file=HINT_FILE,
-        env_info=ENV_INFO,
-    )
-    ctx = AgentContext(allow_all_cli=False)
-    return Agent(config_ns, platform_ns, ctx, memory, use_default_callbacks=False)
+def strip_ansi(text: str) -> str:
+    """去除 ANSI 转义码"""
+    return ANSI_RE.sub("", text)
 
 
 # ============================================================================
-# Rich 渲染辅助
+# EvaBackend — 子进程管理
 # ============================================================================
 
-def rich_markdown(text: str) -> str:
-    """渲染 Markdown 为 Rich 可识别的标记字符串"""
-    if not text:
-        return ""
-    return text  # Rich 自动解析 Markdown
+class EvaBackend:
+    """管理 eva.py 子进程通信"""
 
+    def __init__(self, debug: bool = False):
+        self._debug = debug
+        self._debug_log: list[str] = []
+        self._debug_file = Path(".eva") / "debug.log"
 
-def rich_json(text: str) -> str:
-    """格式化 JSON"""
-    try:
-        obj = json_module.loads(text)
-        return json_module.dumps(obj, ensure_ascii=False, indent=2)
-    except Exception:
-        return text
+        args = [sys.executable, "eva.py", "--tui"]
+        if debug:
+            args.append("--debug")
 
+        self.proc = subprocess.Popen(
+            args,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
 
-def is_json(s: str) -> bool:
-    s = s.strip()
-    return (s.startswith("{") and s.endswith("}")) or (s.startswith("[") and s.endswith("]"))
+    def _log(self, direction: str, msg: dict):
+        if not self._debug:
+            return
+        ts = dt.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        line = f"[{ts}] FRONTEND {direction} {json.dumps(msg, ensure_ascii=False)[:200]}"
+        self._debug_log.append(line)
+        self._debug_file.write_text("\n".join(self._debug_log) + "\n", encoding="utf-8")
+
+    def send(self, msg: dict) -> None:
+        self._log("OUT", msg)
+        self.proc.stdin.write(json.dumps(msg) + "\n")
+        self.proc.stdin.flush()
+
+    def _reader_loop(self, on_message: Callable[[dict], None]) -> None:
+        for line in self.proc.stdout:
+            msg = json.loads(line.strip())
+            self._log("IN", msg)
+            on_message(msg)
+
+    def start_reader(self, on_message: Callable[[dict], None]) -> None:
+        t = Thread(target=self._reader_loop, args=(on_message,), daemon=True)
+        t.start()
+
+    def stop(self) -> None:
+        self.proc.terminate()
 
 
 # ============================================================================
@@ -163,7 +128,7 @@ class MessageBubble(Static):
 
 
 class EVATUI(App):
-    """EVA 终端图形化界面"""
+    """EVA 终端图形化界面（薄前端）"""
 
     CSS = """
     Screen {
@@ -227,65 +192,81 @@ class EVATUI(App):
     BINDINGS = [
         Binding("ctrl+c", "quit", "Quit", show=False),
         Binding("ctrl+l", "clear_conv", "Clear", show=False),
+        Binding("ctrl+d", "toggle_debug", "Debug", show=False),
     ]
 
-    def __init__(self):
+    def __init__(self, debug: bool = False):
         super().__init__()
-        self.agent = create_agent()
-        self.agent.on_thinking = self._on_thinking
-        self.agent.on_content = self._on_content
+        self._debug = debug
+        self.backend = EvaBackend(debug=debug)
         self._thinking_buf: list[str] = []
         self._content_buf: list[str] = []
         self._thinking_widget: Static | None = None
-
-    def _on_thinking(self, text: str) -> None:
-        """Agent thinking 回调 — 缓冲并调度到主线程"""
-        self._thinking_buf.append(text)
-        full = "".join(self._thinking_buf)
-        self.call_from_thread(self._show_thinking, full[:80])
-
-    def _on_content(self, text: str) -> None:
-        """Agent content 回调 — 缓冲内容"""
-        self._content_buf.append(text)
+        self._tool_widget: Static | None = None
 
     def compose(self) -> ComposeResult:
-        yield Static(f"EVA TUI  |  {EVA_MODEL_NAME}  |  Token Cap: {TOKEN_CAP // 1000}k", classes="header")
+        header = "EVA TUI  |  Backend: eva.py --tui"
+        if self._debug:
+            header += "  [DEBUG]"
+        yield Static(header, classes="header")
         yield ScrollableContainer(id="conv_scroll")
         yield Input(placeholder="输入你的问题，按 Enter 发送...", id="user_input")
 
     def on_mount(self) -> None:
-        self.agent.ctx.messages = self.agent.memory.build_initial_messages()
-        history = self.agent.memory.load_session()
-        if history:
-            self.agent.ctx.messages.extend(history)
-        self.agent.ctx.messages.append({
-            "role": "user",
-            "content": "你好，介绍一下你自己",
-        })
-        self.run_worker(self._run_single_step, thread=True)
+        self.backend.start_reader(self._on_backend_message)
+        self.backend.send({"type": "init", "allow_all_cli": False})
 
-    def _render_rich(self, text: str, style: str = "") -> Text:
-        """用 Rich 渲染 Markdown/JSON，返回 Text"""
-        from rich.console import Console
-        from io import StringIO
+    def _on_backend_message(self, msg: dict) -> None:
+        """处理后端发来的所有 JSON 消息"""
+        msg_type = msg.get("type")
 
-        console = Console(file=StringIO(), force_terminal=True, width=120)
-        if is_json(text):
-            console.print(JSON(text))
-        else:
-            console.print(RichMarkdown(text))
+        if msg_type == "ready":
+            # 后端就绪后，发送初始消息
+            self.backend.send({"type": "user_message", "content": "你好，介绍一下你自己"})
+
+        elif msg_type == "event":
+            event = msg.get("event")
+            if event == "thinking":
+                raw = msg.get("data", "")
+                self._thinking_buf.append(strip_ansi(raw))
+                full = "".join(self._thinking_buf)
+                self.call_from_thread(self._show_thinking, full[:80])
+            elif event == "content":
+                self._content_buf.append(msg.get("data", ""))
+            elif event == "tool_start":
+                name = msg.get("name", "?")
+                args = msg.get("args", {})
+                self.call_from_thread(self._append_tool_start, name, args)
+            elif event == "tool_result":
+                result = msg.get("result", "")
+                self.call_from_thread(self._append_tool_result, result)
+            elif event == "compact_panic":
+                self.call_from_thread(self._append_system, "⚠️ 记忆压缩触发")
+
+        elif msg_type == "tool_call":
+            # tool_start 已通知，等待 tool_result 即可
+            pass
+
+        elif msg_type == "response":
+            self.call_from_thread(self._finalize_response, msg)
+
+    def _render_md(self, text: str) -> Text:
+        """将 Markdown 文本渲染为 Rich Text"""
+        clean = strip_ansi(text)
+        console = Console(file=StringIO(), width=120, force_terminal=False)
+        console.print(RichMarkdown(clean))
         rendered = console.file.getvalue()
         return Text.from_ansi(rendered)
 
     def _append_conv(self, role: str, body: str) -> None:
-        """向对话区追加一条消息"""
+        """向对话区追加一条消息（支持 Markdown 渲染）"""
         scroll = self.query_one("#conv_scroll", ScrollableContainer)
-        # 用 Rich 渲染 markdown
-        try:
-            rich_text = self._render_rich(body)
-            bubble = Static(rich_text, classes=f"msg-{role}")
-        except Exception:
-            bubble = Static(body, classes=f"msg-{role}")
+        label = Text(f"🤖 EVA\n", style="bold #e8d5b7")
+        content = self._render_md(body)
+        bubble = Static(
+            label + content,
+            classes=f"msg-{role}",
+        )
         scroll.mount(bubble)
         scroll.scroll_end(animate=False)
 
@@ -296,6 +277,45 @@ class EVATUI(App):
             classes="msg-user",
         )
         scroll.mount(item)
+        scroll.scroll_end(animate=False)
+
+    def _append_tool_start(self, name: str, args: dict) -> None:
+        """显示工具开始执行"""
+        # 清理 thinking 进度条
+        if self._thinking_widget:
+            self._thinking_widget.remove()
+            self._thinking_widget = None
+        scroll = self.query_one("#conv_scroll", ScrollableContainer)
+        args_str = "\n".join(f"{k}: {v}" for k, v in args.items())
+        # 显示命令及运行中指示
+        self._tool_widget = Static(
+            Text(f"🔧 {name}\n{args_str}\n⏳ 执行中...", style="bold #b8a9c9"),
+            classes="msg-tool",
+        )
+        scroll.mount(self._tool_widget)
+        scroll.scroll_end(animate=False)
+
+    def _append_tool_result(self, result: str) -> None:
+        """显示工具执行结果（替换运行中指示）"""
+        scroll = self.query_one("#conv_scroll", ScrollableContainer)
+        # 移除运行中 widget
+        if self._tool_widget:
+            self._tool_widget.remove()
+            self._tool_widget = None
+        # 渲染工具结果（支持 markdown）
+        display = result[:500] + ("... 省略" if len(result) > 500 else "")
+        content = self._render_md(display)
+        scroll.mount(Static(
+            Text("🔧 结果\n", style="bold #b8a9c9") + content,
+            classes="msg-tool",
+        ))
+        scroll.scroll_end(animate=False)
+
+    def _append_system(self, text: str) -> None:
+        scroll = self.query_one("#conv_scroll", ScrollableContainer)
+        scroll.mount(Static(
+            Text(text, style="bold #ff6b6b"),
+        ))
         scroll.scroll_end(animate=False)
 
     def _show_thinking(self, text: str) -> None:
@@ -316,74 +336,13 @@ class EVATUI(App):
             self._thinking_widget.remove()
             self._thinking_widget = None
 
-    def _process_result(self, result: AgentResult) -> None:
+    def _finalize_response(self, msg: dict) -> None:
+        """处理后端最终响应"""
         scroll = self.query_one("#conv_scroll", ScrollableContainer)
-
-        if result.status == "waiting_for_tool":
-            # 先显示 content
-            content_text = "".join(self._content_buf)
-            if content_text:
-                self._append_conv("assistant", content_text)
-            self._finalize_thinking()
-
-            for tc in result.tool_calls:
-                name = tc["name"]
-                args = tc["args"]
-                args_str = "\n".join(f"{k}: {v}" for k, v in args.items())
-                tool_intro = f"🔧 **{name}**\n\n```\n{args_str}\n```\n\n---\n"
-
-                # 工具说明
-                scroll.mount(Static(
-                    Text(f"🔧 {name}\n{args_str}", style="bold #b8a9c9"),
-                    classes="msg-tool",
-                ))
-
-                try:
-                    res = self.agent.tools.execute(name, args)
-                except Exception as e:
-                    res = f"执行异常：{str(e)}"
-
-                self.agent.ctx.messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "name": name,
-                    "content": res,
-                })
-
-                # 工具结果，用 JSON 或 Markdown 渲染
-                # 先去除 ANSI 转义码，避免 Rich markup 解析错误
-                clean_res = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", res)
-                if is_json(clean_res):
-                    formatted = rich_json(clean_res)
-                    scroll.mount(Static(
-                        Text(formatted, style="#b8a9c9"),
-                        classes="msg-tool",
-                    ))
-                else:
-                    display = clean_res[:500] + ("... 省略" if len(clean_res) > 500 else "")
-                    scroll.mount(Static(
-                        Text(display, style="#b8a9c9"),
-                        classes="msg-tool",
-                    ))
-
-                scroll.scroll_end(animate=False)
-
-            self._content_buf = []
-            self._thinking_buf = []
-            # 工具结果已显示，等待 caller 调度 resume
-            return
-
-        elif result.status == "compact_panic":
-            scroll.mount(Static(
-                Text("⚠️ 记忆压缩触发", style="bold #ff6b6b"),
-            ))
-            scroll.scroll_end(animate=False)
-            return
-
-        # completed
-        content_text = "".join(self._content_buf)
-        thinking_text = "".join(self._thinking_buf)
         self._finalize_thinking()
+
+        thinking_text = "".join(self._thinking_buf)
+        content_text = "".join(self._content_buf)
 
         if thinking_text and content_text:
             full = f"💭 *thinking:*\n_{thinking_text}_\n\n---\n\n{content_text}"
@@ -395,26 +354,9 @@ class EVATUI(App):
         if full.strip():
             self._append_conv("assistant", full)
 
-        self.agent.memory.save_session(self.agent.ctx.messages)
-
-    def _run_single_step(self) -> None:
-        """在 worker 线程执行 LLM 调用，回调 DOM 操作到主线程"""
-        result = self.agent.step()
-        self.call_from_thread(self._process_and_maybe_resume, result)
-
-    def _process_and_maybe_resume(self, result: AgentResult) -> None:
-        """在主线程处理 LLM 结果，必要时继续 resume"""
-        self._process_result(result)
-        # resume 需要再次调用 LLM，切换到 worker 线程
-        if result.status == "waiting_for_tool":
-            self.run_worker(self._resume_next, thread=True)
-        elif result.status == "compact_panic":
-            self.run_worker(self._resume_next, thread=True)
-
-    def _resume_next(self) -> None:
-        """继续工具执行后的推理"""
-        resume_result = self.agent.resume([])
-        self.call_from_thread(self._process_and_maybe_resume, resume_result)
+        self.backend.send({"type": "save_session"})
+        self._thinking_buf = []
+        self._content_buf = []
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         user_text = event.value.strip()
@@ -423,20 +365,23 @@ class EVATUI(App):
         event.input.clear()
 
         self._append_user(user_text)
-        self.agent.ctx.messages.append({"role": "user", "content": user_text})
-
+        self.backend.send({"type": "user_message", "content": user_text})
         self._thinking_buf = []
         self._content_buf = []
         self._thinking_widget = None
-
-        # 用线程执行，避免阻塞 UI
-        self.run_worker(self._run_single_step, thread=True)
+        self._tool_widget = None
 
     def action_clear_conv(self) -> None:
         scroll = self.query_one("#conv_scroll", ScrollableContainer)
         for widget in scroll.children:
             widget.remove()
-        self.agent.ctx.messages = self.agent.memory.build_initial_messages()
+
+    def action_toggle_debug(self) -> None:
+        """切换 debug 模式"""
+        self._debug = not self._debug
+        self.query_one("Static").update(
+            f"EVA TUI  |  Backend: eva.py --tui  [{'DEBUG ON' if self._debug else 'DEBUG OFF'}]"
+        )
 
 
 # ============================================================================
@@ -444,9 +389,10 @@ class EVATUI(App):
 # ============================================================================
 
 if __name__ == "__main__":
-    if not EVA_API_KEY:
-        print("错误：请设置 EVA_API_KEY 环境变量（可使用 .env 文件）")
-        print("或运行：export EVA_API_KEY='your-key'")
-        sys.exit(1)
-    app = EVATUI()
+    import argparse
+    parser = argparse.ArgumentParser(description="EVA TUI")
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    args = parser.parse_args()
+
+    app = EVATUI(debug=args.debug)
     app.run()
