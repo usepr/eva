@@ -48,6 +48,12 @@ warn_unused_ignores = true
 disallow_untyped_defs = false
 pretty = true
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
 [dependency-groups]
 dev = [
     "textual (>=8.2.4,<9.0.0)",
