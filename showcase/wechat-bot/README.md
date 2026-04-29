@@ -1,6 +1,6 @@
-# EVA-在微信使用
+# EVA-在微信中使用
 
-作为你的个人助理，帮你维护东西、检索信息等。你可以自由修改bot.py，加入类似openclaw的heartbeat机制
+作为你的个人助理，帮你维护东西、检索信息等。你可以自由修改bot.py，加入类似openclaw的heartbeat机制、identity人设等
 
 ## 快速开始
 
@@ -21,7 +21,7 @@ wechatbot是一个已封装好 iLink 协议的python库，说明文档：https:/
 我的各种信息以及笔记都记在Obsidian里，我希望EVA能帮我检索这些内容，尤其各种杂乱的账号密码。
 此外，Tavily可以让EVA具备联网检索功能。
 
-我给EVA配的`hints.md`内容如下（`hints.md`记忆线索含义参照EVA项目的`README.md`：
+我给EVA配的`hints.md`内容如下（`hints.md`记忆线索是什么参照EVA项目的`README.md`）：
 
 ```md
 ## 我的笔记本
