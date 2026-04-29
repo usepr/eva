@@ -1,6 +1,8 @@
 # EVA-在微信中使用
 
-作为你的个人助理，帮你维护东西、检索信息等。你可以自由修改bot.py，加入类似openclaw的heartbeat机制、identity人设等
+作为你的个人助理，帮你维护东西、检索信息等。你可以自由修改bot.py，加入类似openclaw的heartbeat机制功能、identity人设等
+
+https://github.com/user-attachments/assets/1ae819dc-1673-40cd-bbab-250f87e778c1
 
 ## 快速开始
 
