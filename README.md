@@ -1,45 +1,56 @@
 # ATField
 
-基于 [EVA](https://github.com/usepr/eva) 演进的智能体内核，目标是在保持极简架构的同时，构建安全可信的 Agent 运行时。
+基于 [EVA](https://github.com/usepr/eva) 演进的智能体内核，capability-based 安全模型，流式响应，记忆压缩。
 
-当前版本为单文件原型，核心功能已可用，正在向生产级内核逐步加固。
+## 架构
 
-## 当前功能
+- **单文件核心**: `eva.py` (~1200 行)，Agent / ToolRegistry / Memory / LLMClient
+- **TUI 薄前端**: `eva_tui.py`，通过 JSON over subprocess 与后端通信
+- **测试套件**: `tests/` (161 tests, 140+ passing)
 
-- 交互式 LLM Agent，支持流式响应（含 thinking 过程展示）
-- `run_cli` 工具执行 shell 命令，默认只读，危险操作需 LLM 审查 + 用户确认
-- `leave_memory_hints` 工具实现记忆压缩，突破上下文窗口限制
-- 按工作目录隔离的 Session，自动保存/恢复对话历史
-- 跨平台支持（Windows PowerShell / Linux Bash）
+## 安全边界（当前）
+
+- 默认拒绝：写操作需用户确认
+- 本地 capability 判断：无需 LLM 审查只读命令
+- 审计日志：`.eva/audit/{date}.jsonl`
+- `-a` 模式：高亮警告，仅开发环境
+
+## 安全边界（未来 / 待完成）
+
+- **沙箱**：firejail / sandbox-exec（未实现）
+- **Prompt 防火墙**：未实现
+- **HMAC 签名保护**：未实现
+- **工具插件化**：Schema 注册已完成，插件加载未实现
 
 ## 快速开始
 
 ```bash
-export EVA_API_KEY="sk-xxxxxxxx"
-export EVA_BASE_URL="https://api.deepseek.com/v1"
-export EVA_MODEL_NAME="deepseek-v4-pro"
+# 配置 .env 或环境变量
+poetry run python eva.py
 
-python3 eva.py
+# TUI 模式
+poetry run python eva_tui.py
+
+# 允许所有命令（危险，仅开发）
+poetry run python eva.py -a
 ```
 
-## 待办工作 (TODO)
+## 项目结构
 
-- [ ] **零依赖化**：将 `requests` 替换为 `http.client` 标准库实现
-- [ ] **Capability 权限系统**：从"默认开放+审查"改为"默认拒绝+显式授权"
-- [ ] **沙箱执行**：所有命令通过 firejail 容器化运行
-- [ ] **Prompt 防火墙**：防止用户输入覆盖系统指令
-- [ ] **审计日志**：结构化记录所有操作，哈希链防篡改
-- [ ] **工具插件化**：从硬编码工具改为注册中心 + Schema 校验
-- [ ] **记忆完整性**：hints / sessions 文件增加 HMAC 签名保护
-- [ ] **配置系统**：从环境变量迁移到 `dataclass` + `policies.yaml`
-- [ ] **项目骨架拆分**：从单文件演进为分层模块结构
+```
+eva.py           # 单文件核心
+eva_tui.py       # TUI 薄前端
+pyproject.toml   # 依赖配置
+tests/            # 单元测试套件
+todo/             # 设计文档
+```
 
 ## 设计原则
 
-1. 默认拒绝，显式授权
-2. 零外部依赖（运行时仅 Python 标准库）
-3. 自主进化，但受控进化
-4. 极简即安全
+1. 默认拒绝，显式授权（capability-based）
+2. 本地策略判断，无需 LLM 做安全决策
+3. 流式响应 + 记忆压缩突破上下文限制
+4. 跨平台：Windows PowerShell / Linux Bash
 
 ## License
 
