@@ -5,24 +5,23 @@ EVA TUI — 终端图形化界面（薄前端）
 
 from __future__ import annotations
 
+import datetime as dt
+import json
 import re
 import subprocess
-import json
 import sys
-import datetime as dt
+from io import StringIO
 from pathlib import Path
 from threading import Thread
 from typing import Callable
 
+from rich.console import Console
+from rich.markdown import Markdown as RichMarkdown
+from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import ScrollableContainer
-from textual.widgets import Input, Static, Markdown as TuiMarkdown
-from textual import widgets
-from rich.text import Text
-from rich.markdown import Markdown as RichMarkdown
-from io import StringIO
-from rich.console import Console
+from textual.widgets import Input, Static  # noqa: F401
 
 # ============================================================================
 # 工具函数
@@ -263,7 +262,7 @@ class EVATUI(App):
     def _append_conv(self, role: str, body: str) -> None:
         """向对话区追加一条消息（支持 Markdown 渲染）"""
         scroll = self.query_one("#conv_scroll", ScrollableContainer)
-        label = Text(f"🤖 EVA\n", style="bold #e8d5b7")
+        label = Text("🤖 EVA\n", style="bold #e8d5b7")
         content = self._render_md(body)
         bubble = Static(
             label + content,
@@ -341,7 +340,6 @@ class EVATUI(App):
 
     def _finalize_response(self, msg: dict) -> None:
         """处理后端最终响应"""
-        scroll = self.query_one("#conv_scroll", ScrollableContainer)
         self._finalize_thinking()
 
         thinking_text = "".join(self._thinking_buf)

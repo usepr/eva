@@ -3,21 +3,21 @@ EVA：一个能够自我进化的机器人
 """
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
-import os
-import re
+import argparse
 import json
+import os
+import platform
+import re
 import subprocess
 import sys
 import traceback
-import argparse
-import platform
-from typing import Callable, TypedDict
-
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from typing import Callable
 
 # ============================================================================
 # 1. 基础设施：路径
@@ -388,7 +388,7 @@ def llm_chat_stream(
     tool_calls_map = {}
     usage = None
     role = "assistant"
-    is_first_content = True
+    is_first_content = True  # noqa: F841
     is_thinking = False
 
     try:
@@ -536,7 +536,7 @@ python3 {this_file} "$@"
                 f.write(f"\n# 添加个人 bin 目录\n{path_line}\n")
 
         print(f"> 已创建启动脚本：{eva_dir}")
-        print(f"> 请执行 `source ~/.bashrc` 让配置生效 <========================")
+        print("> 请执行 `source ~/.bashrc` 让配置生效 <========================")
         print("> 配置生效后你就可以直接使用 `eva` 命令启动 EVA")
         return True
     except Exception as e:
@@ -678,15 +678,15 @@ class ToolRegistry:
 
     def __init__(
         self,
-        config: "AgentConfig",
-        platform: "Platform",
+        config: "AgentConfig",  # noqa: F821
+        platform: "Platform",    # noqa: F821
         ctx: AgentContext,
     ):
         self.config = config
         self.platform = platform
         self.ctx = ctx
         self._schemas: dict[str, dict] = {}
-        self._handlers: dict[str, callable] = {}
+        self._handlers: dict[str, Callable] = {}
 
     def _classify_capability(self, command: str) -> Capability:
         """根据命令关键词分类所需能力"""
@@ -804,7 +804,7 @@ class ToolRegistry:
         self.platform.hint_file.write_text(hints, encoding="utf-8")
         return "已留下记忆线索，并清空了对话记录。只保留了最后一次对话"
 
-    def register(self, schema: dict, handler: callable) -> None:
+    def register(self, schema: dict, handler: Callable) -> None:
         """注册工具 schema 和 handler"""
         name = schema["function"]["name"]
         self._schemas[name] = schema
@@ -884,8 +884,8 @@ class Agent:
 
     def __init__(
         self,
-        config: "AgentConfig",
-        platform: "Platform",
+        config: "AgentConfig",  # noqa: F821
+        platform: "Platform",    # noqa: F821
         ctx: AgentContext,
         memory: Memory,
         use_default_callbacks: bool = True,
@@ -1227,7 +1227,6 @@ PROTOCOL_REQUIRED_FIELDS = {
 
 def run_tui_server(ctx: AgentContext, memory: Memory, config_ns, platform_ns, debug: bool = False) -> None:
     """TUI 后端服务器：处理 stdin JSON 消息"""
-    import logging
     import datetime as dt
 
     # Debug 日志配置

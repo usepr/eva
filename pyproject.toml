@@ -29,9 +29,30 @@ build-backend = "poetry.core.masonry.api"
 [tool.poetry]
 package-mode = false
 
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+exclude = [".venv/", "tests/"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = [
+    "E402",   # import not at top (load_dotenv at line 6 needed)
+    "E501",   # line too long (handled by line-length)
+]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+warn_unused_ignores = true
+disallow_untyped_defs = false
+pretty = true
+
 [dependency-groups]
 dev = [
     "textual (>=8.2.4,<9.0.0)",
     "rich (>=15.0.0,<16.0.0)",
-    "pytest (>=9.0.3,<10.0.0)"
+    "pytest (>=9.0.3,<10.0.0)",
+    "ruff>=0.1.0",
+    "mypy>=1.0",
 ]
