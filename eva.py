@@ -630,6 +630,7 @@ def human_loop(user_ask=None, save_after=False):
             if user_ask:
                 if save_after:
                     save_session(messages)
+                    release_lock()
                 break
         except KeyboardInterrupt:
             save_session(messages)
@@ -697,7 +698,7 @@ def main():
         return
 
     # Slogan
-    if not args.user_ask:
+    if not args.user_ask or args.with_session:
         acquire_lock()
     print("=" * 80)
     logo = f"EVA ({EVA_MODEL_NAME}-{TOKEN_CAP//1000}k)"
