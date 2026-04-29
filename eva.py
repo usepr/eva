@@ -162,8 +162,27 @@ def collect_env_info() -> str:
     return "\n\n".join(results) if results else "环境信息获取失败"
 
 
-class ConfigError(Exception):
+class ExitCode:
+    SUCCESS = 0
+    CONFIG_ERROR = 1
+    NETWORK_ERROR = 2
+    MODEL_NOT_FOUND = 3
+    TOOL_DENIED = 4
+    UNKNOWN = 99
+
+
+class EVAError(Exception):
+    """统一异常：包含退出码和用户可见消息"""
+    def __init__(self, code: int, message: str):
+        self.code = code
+        self.message = message
+        super().__init__(message)
+
+
+class ConfigError(EVAError):
     """配置错误（网络探测失败、API Key 无效等）"""
+    def __init__(self, message: str):
+        super().__init__(ExitCode.CONFIG_ERROR, message)
 
 
 def detect_token_cap() -> int:
@@ -721,7 +740,9 @@ class ToolRegistry:
             output += f"\nSTDERR:\n{result.stderr}"
         return output.strip() or "(no output)"
 
-    def _audit_log(self, tool: str, command: str, exit_code: int):
+    def _audit_log(self, tool: str, command: str, exit_code: int,
+                   cap: str | None = None, result_len: int | None = None,
+                   denied: bool = False):
         """写入审计日志到 .eva/audit/"""
         import datetime as dt
         import hashlib
@@ -732,6 +753,9 @@ class ToolRegistry:
             "tool": tool,
             "command_hash": hashlib.sha256(command.encode()).hexdigest()[:16],
             "exit_code": exit_code,
+            "cap": cap,
+            "result_len": result_len,
+            "denied": denied,
         }
         entry_str = json.dumps(entry, ensure_ascii=False) + "\n"
         (audit_dir / f"{dt.date.today()}.jsonl").open("a", encoding="utf-8").write(entry_str)
@@ -743,7 +767,9 @@ class ToolRegistry:
         if first_word not in READONLY_KEYWORDS and command.strip().split()[0] != "echo":
             return f"只读白名单不包括此命令（{first_word}），拒绝执行"
         result = self._execute_direct(command, timeout)
-        self._audit_log("run_cli", command, 0 if "Exit code: 0" in result else 1)
+        cap = self._classify_capability(command)
+        exit_code = 0 if "Exit code: 0" in result else 1
+        self._audit_log("run_cli", command, exit_code, cap=cap.value, result_len=len(result))
         return result
 
     def _run_mutating_cli(self, command: str, timeout: int) -> str:
@@ -751,9 +777,12 @@ class ToolRegistry:
         if not self.ctx.allow_all_cli:
             ans = input(f"\n⚠️  将执行: {command[:60]}...\nYes (默认) / No: ")
             if ans.lower() == "n":
+                self._audit_log("run_cli", command, 0, denied=True)
                 return "用户拒绝执行"
         result = self._execute_direct(command, timeout)
-        self._audit_log("run_cli", command, 0 if "Exit code: 0" in result else 1)
+        cap = self._classify_capability(command)
+        exit_code = 0 if "Exit code: 0" in result else 1
+        self._audit_log("run_cli", command, exit_code, cap=cap.value, result_len=len(result))
         return result
 
     def _run_cli(self, command: str, timeout: int = 30) -> str:
@@ -837,7 +866,7 @@ class ToolRegistry:
             denied = [c for c in required if c not in self.ctx.granted_capabilities]
             if denied:
                 reason = f"能力不足：需要 {[c.value for c in denied]}"
-                self._audit_log(name, reason, 0)
+                self._audit_log(name, reason, 0, denied=True)
                 return f"错误：{reason}"
         return self._handlers[name](**args)
 
@@ -1183,10 +1212,9 @@ def main() -> None:
         try:
             TOKEN_CAP = detect_token_cap()
             TOOL_RESULT_LEN = int(TOKEN_CAP / 20)
-        except ConfigError as e:
-            print(f"错误：{e}")
-            print("提示：使用 --offline 或设置 EVA_OFFLINE=1 可跳过探测")
-            return
+        except EVAError as e:
+            print(f"错误：{e.message}")
+            sys.exit(e.code)
 
     platform_ns = SimpleNamespace(
         shell=SHELL, shell_flag=SHELL_FLAG, os_name=OS_NAME,
