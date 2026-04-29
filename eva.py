@@ -27,16 +27,8 @@ this_dir = Path(__file__).resolve().parent
 
 
 # ============================================================================
-# 2. AgentContext
+# 2. 能力枚举（放在 AgentContext 前，因 AgentContext 引用了它）
 # ============================================================================
-@dataclass
-class AgentContext:
-    """运行时状态容器"""
-    messages: list = field(default_factory=list)
-    compact_panic: str = "off"
-    allow_all_cli: bool = False
-
-
 class Capability(Enum):
     """能力枚举：细粒度权限控制"""
     READ_FS  = "read_fs"   # 读文件系统（ls, cat, grep...）
@@ -45,6 +37,23 @@ class Capability(Enum):
     NETWORK  = "network"   # 网络访问（curl, wget, nc...）
     SESSION  = "session"   # 会话管理（保存/加载会话）
     MEMORY   = "memory"    # 记忆操作（leave_memory_hints）
+
+
+# ============================================================================
+# 3. AgentContext
+# ============================================================================
+@dataclass
+class AgentContext:
+    """运行时状态容器"""
+    messages: list = field(default_factory=list)
+    compact_panic: str = "off"
+    allow_all_cli: bool = False
+    granted_capabilities: set[Capability] = field(default_factory=set)
+
+    def __post_init__(self):
+        # -a 模式自动授予所有能力（开发环境）
+        if self.allow_all_cli:
+            self.granted_capabilities = set(Capability)
 
 
 # 只读命令白名单（可执行前无需用户确认）
@@ -687,6 +696,8 @@ class ToolRegistry:
         self.ctx = ctx
         self._schemas: dict[str, dict] = {}
         self._handlers: dict[str, Callable] = {}
+        # 工具 → 所需能力映射（用于 execute() 入口校验）
+        self._tool_capabilities: dict[str, set[Capability]] = {}
 
     def _classify_capability(self, command: str) -> Capability:
         """根据命令关键词分类所需能力"""
@@ -804,20 +815,30 @@ class ToolRegistry:
         self.platform.hint_file.write_text(hints, encoding="utf-8")
         return "已留下记忆线索，并清空了对话记录。只保留了最后一次对话"
 
-    def register(self, schema: dict, handler: Callable) -> None:
+    def register(self, schema: dict, handler: Callable, capabilities: set[Capability] | None = None) -> None:
         """注册工具 schema 和 handler"""
         name = schema["function"]["name"]
         self._schemas[name] = schema
         self._handlers[name] = handler
+        if capabilities is not None:
+            self._tool_capabilities[name] = capabilities
 
     def get_schemas(self) -> list[dict]:
         """获取所有 schema（供 LLM tools 参数使用）"""
         return list(self._schemas.values())
 
     def execute(self, name: str, args: dict) -> str:
-        """执行工具"""
+        """执行工具（统一入口，默认拒绝 + capability 校验）"""
         if name not in self._handlers:
             return f"未知工具：{name}"
+        # 检查能力授权（默认拒绝）
+        required = self._tool_capabilities.get(name, set())
+        if required:
+            denied = [c for c in required if c not in self.ctx.granted_capabilities]
+            if denied:
+                reason = f"能力不足：需要 {[c.value for c in denied]}"
+                self._audit_log(name, reason, 0)
+                return f"错误：{reason}"
         return self._handlers[name](**args)
 
     def setup_builtin_tools(self) -> None:
@@ -849,8 +870,8 @@ class ToolRegistry:
                 },
             },
         }
-        self.register(run_cli_schema, self._run_cli)
-        self.register(memory_hints_schema, self._leave_memory_hints)
+        self.register(run_cli_schema, self._run_cli, {Capability.EXEC})
+        self.register(memory_hints_schema, self._leave_memory_hints, {Capability.MEMORY})
 
 
 # ============================================================================

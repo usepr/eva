@@ -247,7 +247,7 @@ class TestToolRegistry:
 
     @patch("subprocess.run")
     def test_execute_run_cli_with_allow_all(self, mock_run, mock_config, mock_platform):
-        """测试 run_cli 工具执行（allow_all_cli=True）"""
+        """测试 run_cli 工具执行（allow_all_cli=True → 自动授予所有能力）"""
         mock_run.return_value = MagicMock(
             returncode=0,
             stdout="file1\nfile2",
@@ -260,25 +260,20 @@ class TestToolRegistry:
         result = registry.execute("run_cli", {"command": "ls", "timeout": 30})
         assert "file1" in result or "file2" in result
 
-    def test_execute_run_cli_blocked_by_user(self, mock_config, mock_platform, monkeypatch):
-        """测试 run_cli 被用户拒绝"""
-        ctx = AgentContext(allow_all_cli=False)
+    def test_execute_run_cli_capability_denied_without_grant(self, mock_config, mock_platform):
+        """测试 run_cli 被 capability 默认拒绝（无显式授权）"""
+        ctx = AgentContext(allow_all_cli=False)  # granted_capabilities = set()
         registry = ToolRegistry(mock_config, mock_platform, ctx)
         registry.setup_builtin_tools()
 
-        def mock_input(prompt):
-            return "n"
-
-        monkeypatch.setattr("builtins.input", mock_input)
-
         result = registry.execute("run_cli", {"command": "rm -rf /", "timeout": 30})
-        assert "用户拒绝" in result
+        assert "能力不足" in result
 
     @patch("subprocess.run")
     def test_execute_run_cli_timeout(self, mock_run, mock_config, mock_platform):
-        """测试 run_cli 超时"""
+        """测试 run_cli 超时（allow_all=True → 绕过 capability 检查）"""
         mock_run.side_effect = subprocess.TimeoutExpired("cmd", 30)
-        ctx = AgentContext(allow_all_cli=True)
+        ctx = AgentContext(allow_all_cli=True)  # 自动授予所有能力
         registry = ToolRegistry(mock_config, mock_platform, ctx)
         registry.setup_builtin_tools()
 
