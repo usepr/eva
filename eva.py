@@ -16,6 +16,7 @@ import platform
 from typing import Callable, TypedDict
 
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 
 # ============================================================================
@@ -34,6 +35,39 @@ class AgentContext:
     messages: list = field(default_factory=list)
     compact_panic: str = "off"
     allow_all_cli: bool = False
+
+
+class Capability(Enum):
+    """能力枚举：细粒度权限控制"""
+    READ_FS  = "read_fs"   # 读文件系统（ls, cat, grep...）
+    WRITE_FS = "write_fs"  # 写文件系统（echo, mv, rm, mkdir...）
+    EXEC     = "exec"      # 执行程序（python, node, ./script...）
+    NETWORK  = "network"   # 网络访问（curl, wget, nc...）
+    SESSION  = "session"   # 会话管理（保存/加载会话）
+    MEMORY   = "memory"    # 记忆操作（leave_memory_hints）
+
+
+# 只读命令白名单（可执行前无需用户确认）
+READONLY_KEYWORDS: set[str] = {
+    "ls", "pwd", "cd", "cat", "grep", "find", "head", "tail",
+    "wc", "sort", "uniq", "diff", "strings", "stat", "file",
+    "which", "whereis", "type", "history", "date", "whoami",
+    "id", "uname", "df", "du", "free", "uptime", "ps", "top",
+    "sleep", "echo", "printf", "test", "true", "false",
+}
+# 写操作关键词（有这些词的命令视为写操作）
+WRITE_KEYWORDS: set[str] = {
+    "rm", "mv", "cp", "mkdir", "touch", "chmod", "chown",
+    "dd", "tee", ">", "|", ">>", "ln", "unlink", "wget",
+    "curl", "nano", "vim", "emacs", "sed", "awk",
+}
+
+
+def _classify_capability(command: str) -> Capability:
+    """根据命令关键词分类所需能力"""
+    if any(kw in command for kw in WRITE_KEYWORDS):
+        return Capability.WRITE_FS
+    return Capability.READ_FS
 
 
 # ============================================================================
@@ -654,20 +688,11 @@ class ToolRegistry:
         self._schemas: dict[str, dict] = {}
         self._handlers: dict[str, callable] = {}
 
-    def _review_command(self, command: str) -> bool:
-        """安全审查：LLM 判断命令是否可放行"""
-        if self.ctx.allow_all_cli:
-            return True
-        prompt = CLI_REVIEW_PROMPT.format(command=command)
-        msg, _ = llm_chat(
-            [{"role": "user", "content": prompt}],
-            temperature=0.0,
-            thinking=False,
-        )
-        if "放行" in msg["content"]:
-            return True
-        ans = input("Yes (默认) | No | Ctrl+C 打断：")
-        return "n" not in ans.lower()
+    def _classify_capability(self, command: str) -> Capability:
+        """根据命令关键词分类所需能力"""
+        if any(kw in command for kw in WRITE_KEYWORDS):
+            return Capability.WRITE_FS
+        return Capability.READ_FS
 
     def _execute_direct(self, command: str, timeout: int) -> str:
         """直接执行命令（无沙箱）。Phase 3 替换为 sandbox.run()"""
@@ -685,12 +710,49 @@ class ToolRegistry:
             output += f"\nSTDERR:\n{result.stderr}"
         return output.strip() or "(no output)"
 
+    def _audit_log(self, tool: str, command: str, exit_code: int):
+        """写入审计日志到 .eva/audit/"""
+        import datetime as dt
+        import hashlib
+        audit_dir = WORKSPACE_DIR / "audit"
+        audit_dir.mkdir(parents=True, exist_ok=True)
+        entry = {
+            "time": dt.datetime.now().isoformat(),
+            "tool": tool,
+            "command_hash": hashlib.sha256(command.encode()).hexdigest()[:16],
+            "exit_code": exit_code,
+        }
+        entry_str = json.dumps(entry, ensure_ascii=False) + "\n"
+        (audit_dir / f"{dt.date.today()}.jsonl").open("a", encoding="utf-8").write(entry_str)
+
+    def _run_readonly_cli(self, command: str, timeout: int) -> str:
+        """白名单只读命令，直接执行"""
+        # 白名单二次确认（比关键词更严格）
+        first_word = command.strip().split()[0] if command.strip() else ""
+        if first_word not in READONLY_KEYWORDS and command.strip().split()[0] != "echo":
+            return f"只读白名单不包括此命令（{first_word}），拒绝执行"
+        result = self._execute_direct(command, timeout)
+        self._audit_log("run_cli", command, 0 if "Exit code: 0" in result else 1)
+        return result
+
+    def _run_mutating_cli(self, command: str, timeout: int) -> str:
+        """需用户确认的写操作"""
+        if not self.ctx.allow_all_cli:
+            ans = input(f"\n⚠️  将执行: {command[:60]}...\nYes (默认) / No: ")
+            if ans.lower() == "n":
+                return "用户拒绝执行"
+        result = self._execute_direct(command, timeout)
+        self._audit_log("run_cli", command, 0 if "Exit code: 0" in result else 1)
+        return result
+
     def _run_cli(self, command: str, timeout: int = 30) -> str:
-        """执行 Shell 命令"""
+        """执行 Shell 命令（基于 capability 的本地策略判断）"""
         try:
-            if not self._review_command(command):
-                return "用户拒绝运行此命令"
-            return self._execute_direct(command, timeout)
+            cap = self._classify_capability(command)
+            if cap == Capability.READ_FS:
+                return self._run_readonly_cli(command, timeout)
+            else:
+                return self._run_mutating_cli(command, timeout)
         except Exception as e:
             return f"执行失败：{str(e)}"
 
@@ -1119,7 +1181,7 @@ def main() -> None:
     logo = f"EVA ({EVA_MODEL_NAME}-{TOKEN_CAP // 1000}k)"
     print(" " * ((78 - len(logo)) // 2), logo, "\n")
     if ctx.allow_all_cli:
-        print("> 命令模式：允许所有命令无需确认！")
+        print("\n⚠️  [警告] 允许所有命令执行！仅供开发环境使用 ⚠️\n")
     else:
         print("> 命令模式：只允许读")
     print("=" * 80)
