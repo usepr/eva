@@ -1341,7 +1341,7 @@ def run_tui_server(ctx: AgentContext, memory: Memory, config_ns, platform_ns, de
             except Exception as e:
                 res = f"工具执行异常：{str(e)}"
                 _log("ERROR", "TOOL", {"name": name, "error": str(e)})
-            out_res = {"type": "event", "event": "tool_result", "id": tc["id"], "result": res[:200]}
+            out_res = {"type": "event", "event": "tool_result", "id": tc["id"], "result": res[:TOOL_RESULT_LEN]}
             _safe_print(out_res)
             _log("DEBUG", "OUT event", out_res)
             tool_results.append({

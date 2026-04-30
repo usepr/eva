@@ -42,7 +42,7 @@ def strip_ansi(text: str) -> str:
 class EvaBackend:
     """管理 eva.py 子进程通信"""
 
-    def __init__(self, debug: bool = False):
+    def __init__(self, debug: bool = False, allow_all_cli: bool = False):
         self._debug = debug
         self._debug_log: list[str] = []
         Path(".eva").mkdir(exist_ok=True)
@@ -51,6 +51,8 @@ class EvaBackend:
         args = [sys.executable, "eva.py", "--tui"]
         if debug:
             args.append("--debug")
+        if allow_all_cli:
+            args.append("-a")
 
         self.proc = subprocess.Popen(
             args,
@@ -195,10 +197,11 @@ class EVATUI(App):
         Binding("ctrl+d", "toggle_debug", "Debug", show=False),
     ]
 
-    def __init__(self, debug: bool = False):
+    def __init__(self, debug: bool = False, allow_all_cli: bool = False):
         super().__init__()
         self._debug = debug
-        self.backend = EvaBackend(debug=debug)
+        self._allow_all_cli = allow_all_cli
+        self.backend = EvaBackend(debug=debug, allow_all_cli=allow_all_cli)
         self._thinking_buf: list[str] = []
         self._content_buf: list[str] = []
         self._thinking_widget: Static | None = None
@@ -214,7 +217,7 @@ class EVATUI(App):
 
     def on_mount(self) -> None:
         self.backend.start_reader(self._on_backend_message)
-        self.backend.send({"type": "init", "allow_all_cli": False})
+        self.backend.send({"type": "init", "allow_all_cli": self._allow_all_cli})
 
     def _on_backend_message(self, msg: dict) -> None:
         """处理后端发来的所有 JSON 消息"""
@@ -250,6 +253,9 @@ class EVATUI(App):
 
         elif msg_type == "response":
             self.call_from_thread(self._finalize_response, msg)
+
+        elif msg_type == "session_saved":
+            pass  # save 成功，无需 UI 反馈
 
     def _render_md(self, text: str) -> Text:
         """将 Markdown 文本渲染为 Rich Text"""
@@ -299,12 +305,13 @@ class EVATUI(App):
     def _append_tool_result(self, id: str, result: str) -> None:
         """显示工具执行结果（替换运行中指示）"""
         scroll = self.query_one("#conv_scroll", ScrollableContainer)
-        # 移除运行中 widget
+        # 移除运行中 widget（不删 thinking_widget，等 finalize 再删）
         if self._tool_widget:
             self._tool_widget.remove()
             self._tool_widget = None
-        # 渲染工具结果（支持 markdown）
-        display = result[:500] + ("... 省略" if len(result) > 500 else "")
+        # 渲染工具结果（先清理 ANSI，再截断）
+        clean = strip_ansi(result)
+        display = clean[:500] + ("... 省略" if len(clean) > 500 else "")
         content = self._render_md(display)
         label = Text(f"🔧 工具结果 [{id[:12]}...]\n", style="bold #b8a9c9")
         scroll.mount(Static(
@@ -393,7 +400,8 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="EVA TUI")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument("-a", "--allow-all", action="store_true", help="Allow all CLI commands (dangerous)")
     args = parser.parse_args()
 
-    app = EVATUI(debug=args.debug)
+    app = EVATUI(debug=args.debug, allow_all_cli=args.allow_all)
     app.run()
