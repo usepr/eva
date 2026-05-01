@@ -40,7 +40,10 @@ def detect_model_len():
     out = resp.json()
     for d in out['data']:
         if d['id'] == EVA_MODEL_NAME:
-            return d.get('max_model_len', 256_000)
+            return d.get("max_model_len", {
+                "deepseek-v4-flash": 1_000_000,
+                "deepseek-v4-pro": 1_000_000,
+            }.get(EVA_MODEL_NAME, 256_000))
     print(f"错误：在 {EVA_BASE_URL} 上未找到模型 '{EVA_MODEL_NAME}'，请检查 EVA_MODEL_NAME 配置。")
     print(f"可用模型：{[d['id'] for d in out.get('data', [])]}")
     sys.exit(1)
@@ -55,7 +58,7 @@ HINT_FILE = f"{WORKSPACE_DIR}/hints.md"
 SESSION_DIR = f"{WORKSPACE_DIR}/sessions"
 ALLOW_ALL_CLI = False
 COMPACT_PANIC = False
-
+LAST_USAGE = None
 
 # ====================== 跨平台配置区 ======================
 IS_WINDOWS = platform.system() == "Windows"
@@ -314,6 +317,14 @@ def _build_request_data(messages, tools=None, temperature=0.6, thinking=True, st
         data['stream_options'] = {"include_usage": True}
     return data
 
+def display_usage(usage, cap):
+    t = usage.get('total_tokens', 0) if usage else 0
+    if t == 0 or cap <= 0:
+        return
+    
+    p = min(t / cap, 1.0)
+    bar = '█' * int(p*20) + '░' * (20-int(p*20))
+    print(f"\033[2mCTX [{bar}] {p:.0%}  ({t//1000}k/{cap//1000}k)\033[0m")
 
 def llm_chat(messages, tools=None, temperature=0.6, thinking=True):
     url = f"{EVA_BASE_URL}/chat/completions"
@@ -418,11 +429,9 @@ def llm_chat_stream(messages, tools=None, temperature=0.6, thinking=True):
                     if func_delta.get('arguments'):
                         tc_entry['function']['arguments'] += func_delta['arguments']
 
-        # 正常结束时重置颜色（Ctrl+C 时 finally 也会执行此逻辑）
         if is_thinking:
             sys.stdout.write('\033[0m\n')
     finally:
-        # Ctrl+C 中断时也要重置颜色，避免终端保持暗色
         if is_thinking:
             sys.stdout.write('\033[0m\n')
             sys.stdout.flush()
@@ -440,10 +449,8 @@ def llm_chat_stream(messages, tools=None, temperature=0.6, thinking=True):
     if tool_calls_map:
         message['tool_calls'] = [tool_calls_map[i] for i in sorted(tool_calls_map.keys())]
 
-    # fallback usage
     if usage is None:
         usage = {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0}
-
     return message, usage
 
 
@@ -503,8 +510,9 @@ def load_session():
         messages[0] = {"role": "system", "content": SYSTEM_PROMPT.format(hints=hints or "无", env_info=ENV_INFO)}
 
         last_msg = messages[-1]
-        if last_msg['role'] == 'assistant' and 'tool_calls' in last_msg:
-            del last_msg['tool_calls']
+        if last_msg['role'] == 'assistant':
+            if 'tool_calls' in last_msg:
+                del last_msg['tool_calls']
             if not last_msg['content']:
                 del messages[-1]
         size_KB = (os.path.getsize(session_file) + 999) // 1000
@@ -548,7 +556,7 @@ def clear_session():
 
 # ====================== Agent Loop ======================
 def agent_single_loop():
-    global COMPACT_PANIC
+    global COMPACT_PANIC, LAST_USAGE
     break_loop = False
     while not break_loop:
         try:
@@ -556,6 +564,7 @@ def agent_single_loop():
             sys.stdout.flush()
             tools = [run_cli_schema, memory_hints_schema] if COMPACT_PANIC else [run_cli_schema]
             msg, usage = llm_chat_stream(messages, tools=tools)
+            LAST_USAGE = usage
             messages.append(msg)
 
             # 流式输出已经实时打印了内容，这里只需换行
@@ -624,6 +633,7 @@ def human_loop(user_ask=None, save_after=False):
     global messages
     while True:
         try:
+            display_usage(LAST_USAGE, TOKEN_CAP)
             if user_ask:
                 user_input = user_ask
                 print(f"[-] You: {user_input}\n")
