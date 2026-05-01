@@ -497,6 +497,10 @@ def load_session():
     try:
         with open(session_file, "r", encoding="utf-8") as f:
             messages = json.load(f)
+        
+        ## eva运行过程可能自主修改hints，下载启动时需要重新载入hints，而不是复用session
+        messages[0] = {"role": "system", "content": SYSTEM_PROMPT.format(hints=hints or "无", env_info=ENV_INFO)}
+
         last_msg = messages[-1]
         if last_msg['role'] == 'assistant' and 'tool_calls' in last_msg:
             del last_msg['tool_calls']
