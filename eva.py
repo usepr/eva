@@ -382,7 +382,7 @@ def _trim_tool_content(msg):
     return msg
 
 def leave_memory_hints(hints):
-    global messages, COMPACT_PANIC
+    global messages, COMPACT_PANIC, memory_hints, SYSTEM_PROMPT
 
     compact_i = -1
     for i in range(len(messages)-1, -1, -1):
@@ -403,6 +403,12 @@ def leave_memory_hints(hints):
     if len(kept) > 200: # 最多保留200条消息
         kept = kept[:100] + kept[-100:]
 
+    # 先持久化，再同步进当前进程；写入失败时不应清空消息历史
+    with open(HINT_FILE, "w", encoding="utf-8") as f:
+        f.write(hints)
+
+    memory_hints = hints
+    SYSTEM_PROMPT = build_system_prompt(memory_hints)
     messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content":
@@ -418,9 +424,6 @@ def leave_memory_hints(hints):
         ]
 
     COMPACT_PANIC = False
-
-    with open(HINT_FILE, "w", encoding="utf-8") as f:
-        f.write(hints)
     return "已留下记忆线索，并清空了对话记录。只保留了最后一次对话"
 
 tool_executors = {
@@ -643,8 +646,17 @@ os.makedirs(EVA_HOME, exist_ok=True)
 os.makedirs(PROJECT_EVA_DIR, exist_ok=True)
 
 eva_md = Path(EVA_FILE).read_text(encoding="utf-8") if Path(EVA_FILE).exists() else ""
-hints = Path(HINT_FILE).read_text(encoding="utf-8") if Path(HINT_FILE).exists() else ""
-SYSTEM_PROMPT = SYSTEM_PROMPT_TEMPLATE.format(eva_md=eva_md or "无", hints=hints or "无", env_info=ENV_INFO, compact_note="")
+memory_hints = Path(HINT_FILE).read_text(encoding="utf-8") if Path(HINT_FILE).exists() else ""
+
+def build_system_prompt(hints, compact_note=""):
+    return SYSTEM_PROMPT_TEMPLATE.format(
+        eva_md=eva_md or "无",
+        hints=hints or "无",
+        env_info=ENV_INFO,
+        compact_note=compact_note,
+    )
+
+SYSTEM_PROMPT = build_system_prompt(memory_hints)
 messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
 # ====================== Session 管理 ======================
@@ -760,7 +772,7 @@ def agent_single_loop():
             sys.stdout.flush()
             try:
                 if COMPACT_PANIC:
-                    messages[0]['content'] = SYSTEM_PROMPT_TEMPLATE.format(eva_md=eva_md or "无", hints=hints or "无", env_info=ENV_INFO, compact_note=COMPACT_NOTE)
+                    messages[0]['content'] = build_system_prompt(memory_hints, COMPACT_NOTE)
                     msg, usage = llm_chat_stream(messages, tools=[run_cli_schema, memory_hints_schema])
                 else:
                     msg, usage = llm_chat_stream(messages, tools=[run_cli_schema])
