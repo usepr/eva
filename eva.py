@@ -9,7 +9,7 @@ import argparse
 import urllib.request
 import urllib.error
 from pathlib import Path
-from datetime import date
+from datetime import datetime
 
 # 尝试导入 prompt_toolkit：有则启用丝滑多行输入，无则保持零依赖
 try:
@@ -268,7 +268,7 @@ def collect_env_info():
         except Exception:
             pass
     
-    today = date.today().strftime("%Y-%m-%d")
+    today = datetime.now().strftime("%Y-%m-%d")
     return f"=== 今天日期 ===\n{today}\n\n" + ("\n\n".join(results) if results else "环境信息获取失败")
 
 ENV_INFO = collect_env_info()
@@ -550,7 +550,7 @@ def display_usage(usage, cap):
     
     p = min(t / cap, 1.0)
     bar = '█' * int(p*20) + '░' * (20-int(p*20))
-    print(f"\033[2mCTX [{bar}] {p:.0%}  ({t//1000}k/{cap//1000}k)\033[0m")
+    print(f"\033[2mCTX [{bar}] {p:.0%} ({t//1000}k/{cap//1000}k)  [{datetime.now().strftime('%-m/%-d %H:%M:%S')}]\033[0m")
 
 def llm_chat(messages, tools=None, temperature=0.6, thinking=True):
     url = f"{EVA_BASE_URL}/chat/completions"
