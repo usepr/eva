@@ -550,7 +550,7 @@ def display_usage(usage, cap):
     
     p = min(t / cap, 1.0)
     bar = '█' * int(p*20) + '░' * (20-int(p*20))
-    print(f"\033[2mCTX [{bar}] {p:.0%} ({t//1000}k/{cap//1000}k)  [{datetime.now().strftime('%-m/%-d %H:%M:%S')}]\033[0m")
+    print(f"\033[2mCTX [{bar}] {p:.0%} ({t//1000}k/{cap//1000}k)  [{datetime.now().strftime('%m/%d %H:%M:%S')}]\033[0m")
 
 def llm_chat(messages, tools=None, temperature=0.6, thinking=True):
     url = f"{EVA_BASE_URL}/chat/completions"
